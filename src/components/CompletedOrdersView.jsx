@@ -1,28 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { supabase } from '../supabaseClient';
-import { CheckCircle2, Clock } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 
 export default function CompletedOrdersView() {
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetchCompletedOrders();
-  }, []);
-
-  const fetchCompletedOrders = async () => {
-    // In a real database scenario, we fetch orders where status = 'Completed'
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*, clients(*)')
-      .eq('status', 'Completed')
-      .order('created_at', { ascending: false });
-
-    if (!error && data) {
-      setOrders(data);
+  const { data: orders = [], isLoading } = useQuery({
+    queryKey: ['completed-orders'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*, clients(*)')
+        .eq('status', 'Completed')
+        .order('created_at', { ascending: false })
+        .limit(50); // Optimization: Limit to last 50 for faster load
+      
+      if (error) throw error;
+      return data;
     }
-    setLoading(false);
-  };
+  });
 
   return (
     <div className="space-y-6">
@@ -48,8 +42,15 @@ export default function CompletedOrdersView() {
             </thead>
             <tbody className="divide-y divide-zinc-100">
               
-              {loading ? (
-                <tr><td colSpan="4" className="px-6 py-10 text-center">Loading archives...</td></tr>
+              {isLoading ? (
+                [1, 2, 3].map(i => (
+                  <tr key={i}>
+                    <td className="px-6 py-4"><div className="h-4 w-20 bg-zinc-100 rounded pulse-light" /></td>
+                    <td className="px-6 py-4"><div className="h-4 w-32 bg-zinc-100 rounded pulse-light" /></td>
+                    <td className="px-6 py-4"><div className="h-4 w-24 bg-zinc-100 rounded pulse-light" /></td>
+                    <td className="px-6 py-4 flex justify-center"><div className="h-6 w-24 bg-zinc-100 rounded-full pulse-light" /></td>
+                  </tr>
+                ))
               ) : orders.length > 0 ? (
                 orders.map((order) => (
                   <tr key={order.id} className="hover:bg-zinc-50 transition-colors">

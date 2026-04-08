@@ -1,70 +1,70 @@
-import { useState, useEffect } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabaseClient';
 import { FileText, TrendingUp, Users, Printer, Clock, MoreHorizontal, CheckCircle2 } from 'lucide-react';
 
 export default function MetricsView() {
-  const [orders, setOrders] = useState([]);
-  const [metrics, setMetrics] = useState({
-    activeOrders: 0,
-    totalClients: 0,
-    totalItems: 0
+  const queryClient = useQueryClient();
+
+  // Optimized parallel fetch using React Query
+  const { data, isPending, isError, error: queryError, refetch } = useQuery({
+    queryKey: ['dashboard-data'],
+    queryFn: async () => {
+      // Direct use of sanitized supabase client
+      const { data, error } = await supabase.rpc('get_dashboard_stats');
+      if (error) throw error;
+
+      return {
+        orders: data.recent_orders || [],
+        metrics: {
+          activeOrders: data.active_orders || 0,
+          totalClients: data.total_clients || 0,
+          totalItems: data.total_items || 0
+        }
+      };
+    },
+    placeholderData: (prev) => prev,
+    staleTime: 1000 * 60 * 5,
+    retry: 1
   });
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchDashboardData();
-  }, []);
+  const orders = data?.orders || [];
+  const metrics = data?.metrics || { activeOrders: 0, totalClients: 0, totalItems: 0 };
+  const showSkeletons = isPending && !data;
 
-  const fetchDashboardData = async () => {
-    setLoading(true);
-    
-    // 1. Fetch active orders with relational data
-    const { data: pipelineData, error: pipelineErr } = await supabase
-      .from('orders')
-      .select('*, clients(*), items(*)')
-      .neq('status', 'Completed')
-      .order('created_at', { ascending: false });
-
-    // 2. Count total clients
-    const { count: clientCount, error: clientErr } = await supabase
-      .from('clients')
-      .select('id', { count: 'exact', head: true });
-
-    if (!pipelineErr && pipelineData) {
-      setOrders(pipelineData);
+  // Status update mutation
+  const statusMutation = useMutation({
+    mutationFn: async ({ id, nextStatus }) => {
+      const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', id);
+      if (error) throw error;
+    },
+    onMutate: async ({ id, nextStatus }) => {
+      await queryClient.cancelQueries({ queryKey: ['dashboard-data'] });
+      const previousData = queryClient.getQueryData(['dashboard-data']);
       
-      let itemsCount = 0;
-      pipelineData.forEach(order => {
-        if (order.items) itemsCount += order.items.length;
+      queryClient.setQueryData(['dashboard-data'], (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          orders: nextStatus === 'Completed' 
+            ? old.orders.filter(o => o.id !== id)
+            : old.orders.map(o => o.id === id ? { ...o, status: nextStatus } : o)
+        };
       });
 
-      setMetrics({
-        activeOrders: pipelineData.length,
-        totalClients: clientCount || 0,
-        totalItems: itemsCount
-      });
+      return { previousData };
+    },
+    onError: (err, variables, context) => {
+      queryClient.setQueryData(['dashboard-data'], context.previousData);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['dashboard-data'] });
     }
+  });
 
-    setLoading(false);
-  };
-
-  const cycleStatus = async (id, currentStatus) => {
+  const cycleStatus = (id, currentStatus) => {
     const statuses = ['Pending', 'Printing', 'Post-Processing', 'Completed'];
     const nextIndex = (statuses.indexOf(currentStatus) + 1) % statuses.length;
-    const nextStatus = statuses[nextIndex];
-    
-    // Optimistic UI update
-    setOrders(orders.map(o => o.id === id ? { ...o, status: nextStatus } : o));
-
-    try {
-      await supabase.from('orders').update({ status: nextStatus }).eq('id', id);
-      // Remove from list if it became Completed
-      if (nextStatus === 'Completed') {
-        setOrders(prev => prev.filter(o => o.id !== id));
-      }
-    } catch(err) {
-      console.error(err);
-    }
+    statusMutation.mutate({ id, nextStatus: statuses[nextIndex] });
   };
 
   const StatusBadge = ({ status, onClick }) => {
@@ -90,6 +90,23 @@ export default function MetricsView() {
   return (
     <div className="space-y-8">
       
+      {/* Error State */}
+      {isError && !data && (
+        <div className="bg-red-50 border border-red-200 p-6 rounded-lg text-center">
+          <TrendingUp className="w-12 h-12 text-red-400 mx-auto mb-4 opacity-50" />
+          <h3 className="text-red-900 font-bold text-lg mb-2">Dashboard Connectivity Issue</h3>
+          <p className="text-red-700 text-sm mb-6">
+            We're having trouble connecting to the database. {queryError?.message || 'Please check your connection.'}
+          </p>
+          <button 
+            onClick={() => refetch()}
+            className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded font-bold shadow-sm transition-colors"
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         
@@ -99,7 +116,7 @@ export default function MetricsView() {
             <FileText className="w-5 h-5 text-zinc-400" />
           </div>
           <span className="text-3xl font-extrabold text-zinc-900 tracking-tight">
-            {loading ? '...' : metrics.activeOrders}
+            {showSkeletons ? <div className="h-9 w-16 bg-zinc-100 rounded animate-shimmer" /> : metrics.activeOrders}
           </span>
           <span className="text-xs text-zinc-500 font-medium mt-2">Currently in pipeline</span>
         </div>
@@ -110,7 +127,7 @@ export default function MetricsView() {
             <Users className="w-5 h-5 text-zinc-400" />
           </div>
           <span className="text-3xl font-extrabold text-zinc-900 tracking-tight">
-            {loading ? '...' : metrics.totalClients}
+            {showSkeletons ? <div className="h-9 w-16 bg-zinc-100 rounded animate-shimmer" /> : metrics.totalClients}
           </span>
           <span className="text-xs text-zinc-500 font-medium mt-2">Registered in database</span>
         </div>
@@ -121,7 +138,7 @@ export default function MetricsView() {
             <Printer className="w-5 h-5 text-zinc-400" />
           </div>
           <span className="text-3xl font-extrabold text-zinc-900 tracking-tight">
-            {loading ? '...' : metrics.totalItems}
+            {showSkeletons ? <div className="h-9 w-16 bg-zinc-100 rounded animate-shimmer" /> : metrics.totalItems}
           </span>
           <span className="text-xs text-zinc-500 font-medium mt-2">Across all active objects</span>
         </div>
@@ -152,12 +169,16 @@ export default function MetricsView() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
-              {loading ? (
-                <tr>
-                  <td colSpan="5" className="px-6 py-10 text-center text-zinc-500">
-                    Loading pipeline from Supabase...
-                  </td>
-                </tr>
+              {showSkeletons ? (
+                [1, 2, 3, 4, 5].map(i => (
+                  <tr key={i}>
+                    <td className="px-6 py-4"><div className="h-4 w-20 bg-zinc-100 rounded pulse-light" /></td>
+                    <td className="px-6 py-4"><div className="h-4 w-32 bg-zinc-100 rounded pulse-light" /></td>
+                    <td className="px-6 py-4"><div className="h-4 w-24 bg-zinc-100 rounded pulse-light" /></td>
+                    <td className="px-6 py-4 flex justify-center"><div className="h-6 w-24 bg-zinc-100 rounded-full pulse-light" /></td>
+                    <td className="px-6 py-4"><div className="h-4 w-4 bg-zinc-100 rounded ml-auto pulse-light" /></td>
+                  </tr>
+                ))
               ) : orders.map((order) => (
                 <tr key={order.id} className="hover:bg-zinc-50 transition-colors">
                   <td className="px-6 py-4 whitespace-nowrap font-semibold text-zinc-900">
@@ -180,7 +201,7 @@ export default function MetricsView() {
                 </tr>
               ))}
               
-              {!loading && orders.length === 0 && (
+              {!isPending && orders.length === 0 && (
                 <tr>
                   <td colSpan="5" className="px-6 py-10 text-center text-zinc-500">
                     No active orders found in the pipeline. Start building a quote!
