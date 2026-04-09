@@ -70,6 +70,7 @@ export default function MetricsView() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['dashboard-data'] });
+      queryClient.invalidateQueries({ queryKey: ['completed-orders'] });
     }
   });
 
