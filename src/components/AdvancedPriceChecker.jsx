@@ -157,6 +157,14 @@ export default function AdvancedPriceChecker({ config }) {
     assembly: false
   });
 
+  // Read inventory filaments from localStorage (kept in sync with InventoryView)
+  const [inventoryFilaments] = useState(() => {
+    try {
+      const saved = localStorage.getItem('inventory_filaments');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+
   const calcElectricityAndMaterials = () => {
     let totalKWh = 0;
     let elecCost = 0;
@@ -231,6 +239,36 @@ export default function AdvancedPriceChecker({ config }) {
     dispatch({ type: 'UPDATE_FIELD', field: e.target.name, value: e.target.value });
   };
 
+  // Deduct filament weights from inventory localStorage when an order is confirmed
+  const deductInventoryStock = () => {
+    try {
+      const saved = localStorage.getItem('inventory_filaments');
+      if (!saved) return;
+      let inventory = JSON.parse(saved);
+
+      // Aggregate total grams used per inventory filament ID across all plates
+      const usageMap = {};
+      state.plates.forEach(plate => {
+        plate.filaments.forEach(f => {
+          if (f.inventoryId) {
+            const key = String(f.inventoryId);
+            usageMap[key] = (usageMap[key] || 0) + (parseFloat(f.weight) || 0);
+          }
+        });
+      });
+
+      // Subtract from matching inventory items (floor at 0)
+      inventory = inventory.map(inv => {
+        const used = usageMap[String(inv.id)] || 0;
+        return used > 0 ? { ...inv, weightGrams: Math.max(0, inv.weightGrams - used) } : inv;
+      });
+
+      localStorage.setItem('inventory_filaments', JSON.stringify(inventory));
+    } catch (err) {
+      console.error('Failed to deduct inventory stock:', err);
+    }
+  };
+
   const confirmOrderMutation = useMutation({
     mutationFn: async () => {
       const financial_breakdown = {
@@ -264,12 +302,14 @@ export default function AdvancedPriceChecker({ config }) {
       return orderId;
     },
     onSuccess: () => {
+      deductInventoryStock();
       alert('Order successfully saved to Supabase (Optimized)!');
       queryClient.invalidateQueries({ queryKey: ['dashboard-data'] });
       setShowModal(false);
     },
     onError: (e) => {
       console.error('Database Error:', e.message);
+      deductInventoryStock();
       alert('Order processed locally! (Set ENV variables and apply SQL migration to write to Supabase)');
       setShowModal(false);
     }
@@ -409,9 +449,42 @@ export default function AdvancedPriceChecker({ config }) {
                   
                   <div className="space-y-3">
                     {plate.filaments.map((filament, fIndex) => (
-                      <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end bg-zinc-50/50 p-3 rounded border border-zinc-100">
+                      <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1.5fr_1fr_1fr_auto] gap-3 items-end bg-zinc-50/50 p-3 rounded border border-zinc-100">
+
+                        {/* Inventory Filament Selector */}
                         <div>
-                          <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Filament {fIndex + 1} Weight</label>
+                          <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Filament {fIndex + 1}</label>
+                          {inventoryFilaments.length > 0 ? (
+                            <select
+                              value={filament.inventoryId ?? ''}
+                              onChange={(e) => {
+                                const inv = inventoryFilaments.find(f => String(f.id) === e.target.value);
+                                if (inv) {
+                                  dispatch({ type: 'UPDATE_PLATE_FILAMENT', plateId: plate.id, filamentId: filament.id, field: 'inventoryId', value: inv.id });
+                                  dispatch({ type: 'UPDATE_PLATE_FILAMENT', plateId: plate.id, filamentId: filament.id, field: 'costPerKg', value: inv.costPerKg });
+                                } else {
+                                  dispatch({ type: 'UPDATE_PLATE_FILAMENT', plateId: plate.id, filamentId: filament.id, field: 'inventoryId', value: '' });
+                                }
+                              }}
+                              className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900"
+                            >
+                              <option value="">— select filament —</option>
+                              {inventoryFilaments.map(inv => (
+                                <option key={inv.id} value={String(inv.id)}>
+                                  {inv.type || inv.name}{inv.color ? ` – ${inv.color}` : ''}{inv.brand ? ` (${inv.brand})` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <div className="px-3 py-2 bg-zinc-50 border border-dashed border-zinc-200 rounded-md text-xs text-zinc-400 italic">
+                              No inventory — add filaments in the Inventory tab
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Weight */}
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Weight Used</label>
                           <div className="relative">
                             <input
                               type="number" min="0" value={filament.weight}
@@ -421,6 +494,8 @@ export default function AdvancedPriceChecker({ config }) {
                             <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">g</span>
                           </div>
                         </div>
+
+                        {/* Cost Rate (auto-filled from inventory, still editable) */}
                         <div>
                           <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Cost Rate</label>
                           <div className="relative">
@@ -432,6 +507,8 @@ export default function AdvancedPriceChecker({ config }) {
                             <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP/kg</span>
                           </div>
                         </div>
+
+                        {/* Remove */}
                         <div className="flex h-[38px] items-center">
                           {plate.filaments.length > 1 && (
                             <button
