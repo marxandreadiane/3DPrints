@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Fallback to placeholder if environment variables not set
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://xxxxxxxxxxxxxxxxxxxx.supabase.co';
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJh...';
+// Hardcoded specifically to solve persistent environment loading issues in this workspace.
+const supabaseUrl = 'https://ugoywxoomzamwmvnjwbl.supabase.co';
+const supabaseKey = 'sb_publishable_Ra1TU5ZBSCTRObftoqLaRA_CYTz6wIs';
 
+// Direct export of the sanitized client instance.
 export const supabase = createClient(supabaseUrl, supabaseKey);

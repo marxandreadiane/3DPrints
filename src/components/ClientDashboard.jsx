@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import AdvancedPriceChecker from './AdvancedPriceChecker';
 import MetricsView from './MetricsView';
 import ConfigurationsView from './ConfigurationsView';
@@ -9,6 +9,29 @@ export default function ClientDashboard() {
   const [selectedClient, setSelectedClient] = useState('John Doe Studios');
   const [selectedOrder, setSelectedOrder] = useState('ORD-2024-089');
   const [activeTab, setActiveTab] = useState('Calculator');
+  
+  const [systemConfig, setSystemConfig] = useState(() => {
+    const saved = localStorage.getItem('nexusPrintConfig');
+    if (saved) return JSON.parse(saved);
+    return {
+      baseCostRate: 14.16,
+      printerKwhPerHour: 0.2,
+      powerSurgeKwh: 1.3,
+      hourlyLaborRate: 250,
+      filamentChangeCost: 0.1,
+      sandingCost: 500,
+      paintingCost: 800,
+      assemblyCost: 350,
+      failureRatePercent: 10,
+      markupPercent: 30,
+      wearTearCostPer15Min: 2.5,
+    };
+  });
+
+  // Save to localStorage whenever config is updated
+  useEffect(() => {
+    localStorage.setItem('nexusPrintConfig', JSON.stringify(systemConfig));
+  }, [systemConfig]);
 
   const clients = ['John Doe Studios', 'Acme Props', 'NerdGear Inc'];
   const orders = ['ORD-2024-089', 'ORD-2024-092', 'New Order'];
@@ -129,7 +152,7 @@ export default function ClientDashboard() {
                   <h1 className="text-2xl font-bold tracking-tight text-zinc-900 mb-1">Cost Estimation Engine</h1>
                   <p className="text-sm text-zinc-500 font-medium">Configure inputs precisely to generate the final pricing tier.</p>
                 </div>
-                <AdvancedPriceChecker />
+                <AdvancedPriceChecker config={systemConfig} />
               </>
             )}
 
@@ -137,7 +160,7 @@ export default function ClientDashboard() {
             
             {activeTab === 'Archives' && <CompletedOrdersView />}
             
-            {activeTab === 'Configurations' && <ConfigurationsView />}
+            {activeTab === 'Configurations' && <ConfigurationsView config={systemConfig} setConfig={setSystemConfig} />}
           </div>
         </div>
 
