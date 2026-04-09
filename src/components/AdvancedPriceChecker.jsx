@@ -2,18 +2,22 @@ import { useReducer, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabaseClient';
 import {
-  Calculator, Plus, Trash2, Box, Zap, Clock, Coins, Wrench, CheckCircle2, Paintbrush, Shield, User
+  Calculator, Plus, Trash2, Box, Zap, Clock, Coins, Wrench, CheckCircle2, Paintbrush, Shield, User, Layers
 } from 'lucide-react';
 
 const initialState = {
   clientName: '',
   clientPhone: '',
   itemName: '',
-  filaments: [{ id: Date.now(), weight: 0, costPerKg: 700 }],
-  filamentChangeCount: 0,
-  printTimeHours: 0,
-  printTimeMinutes: 0,
-  numberOfPlates: 1,
+  plates: [
+    {
+      id: Date.now(),
+      printTimeHours: 0,
+      printTimeMinutes: 0,
+      filamentChangeCount: 0,
+      filaments: [{ id: Date.now() + 1, weight: 0, costPerKg: 700 }]
+    }
+  ],
   labors: [],
   materials: [],
   packagingCost: 0,
@@ -24,7 +28,16 @@ const initialState = {
 function init(config) {
   return {
     ...initialState,
-    labors: [{ id: Date.now(), type: '3D Modeling & Printing', hours: 0, rate: config?.hourlyLaborRate || 250 }]
+    plates: [
+      {
+        id: Date.now(),
+        printTimeHours: 0,
+        printTimeMinutes: 0,
+        filamentChangeCount: 0,
+        filaments: [{ id: Date.now() + 1, weight: 0, costPerKg: 700 }]
+      }
+    ],
+    labors: [{ id: Date.now() + 2, type: '3D Modeling & Printing', hours: 0, rate: config?.hourlyLaborRate || 250 }]
   };
 }
 
@@ -32,24 +45,67 @@ function formReducer(state, action) {
   switch (action.type) {
     case 'UPDATE_FIELD':
       return { ...state, [action.field]: action.value };
-    case 'ADD_FILAMENT':
+      
+    case 'ADD_PLATE':
       return {
         ...state,
-        filaments: [...state.filaments, { id: Date.now(), weight: 0, costPerKg: 700 }],
-        filamentChangeCount: Number(state.filamentChangeCount || 0) + 1
+        plates: [
+          ...state.plates,
+          {
+            id: Date.now(),
+            printTimeHours: 0,
+            printTimeMinutes: 0,
+            filamentChangeCount: 0,
+            filaments: [{ id: Date.now() + 1, weight: 0, costPerKg: 700 }]
+          }
+        ]
       };
-    case 'UPDATE_FILAMENT':
+    case 'REMOVE_PLATE':
       return {
         ...state,
-        filaments: state.filaments.map(f =>
-          f.id === action.id ? { ...f, [action.field]: action.value } : f
+        plates: state.plates.filter(p => p.id !== action.id)
+      };
+    case 'UPDATE_PLATE':
+      return {
+        ...state,
+        plates: state.plates.map(p =>
+          p.id === action.id ? { ...p, [action.field]: action.value } : p
         )
       };
-    case 'REMOVE_FILAMENT':
+      
+    case 'ADD_PLATE_FILAMENT':
       return {
         ...state,
-        filaments: state.filaments.filter(f => f.id !== action.id)
+        plates: state.plates.map(p =>
+          p.id === action.plateId
+            ? { ...p, filaments: [...p.filaments, { id: Date.now(), weight: 0, costPerKg: 700 }] }
+            : p
+        )
       };
+    case 'UPDATE_PLATE_FILAMENT':
+      return {
+        ...state,
+        plates: state.plates.map(p =>
+          p.id === action.plateId
+            ? {
+                ...p,
+                filaments: p.filaments.map(f =>
+                  f.id === action.filamentId ? { ...f, [action.field]: action.value } : f
+                )
+              }
+            : p
+        )
+      };
+    case 'REMOVE_PLATE_FILAMENT':
+      return {
+        ...state,
+        plates: state.plates.map(p =>
+          p.id === action.plateId
+            ? { ...p, filaments: p.filaments.filter(f => f.id !== action.filamentId) }
+            : p
+        )
+      };
+
     case 'ADD_MATERIAL':
       return {
         ...state,
@@ -64,8 +120,10 @@ function formReducer(state, action) {
       };
     case 'REMOVE_MATERIAL':
       return {
+        ...state,
         materials: state.materials.filter(m => m.id !== action.id)
       };
+      
     case 'ADD_LABOR':
       return {
         ...state,
@@ -99,32 +157,56 @@ export default function AdvancedPriceChecker({ config }) {
     assembly: false
   });
 
-  const calcElectricity = () => {
-    const plates = Math.max(1, parseInt(state.numberOfPlates) || 0);
-    const filaments = Math.max(1, parseInt(state.filamentChangeCount) || 0);
-    const hours = Math.max(0, parseFloat(state.printTimeHours) || 0);
-    const minutes = Math.max(0, parseFloat(state.printTimeMinutes) || 0);
-    const totalHours = hours + (minutes / 60);
+  const calcElectricityAndMaterials = () => {
+    let totalKWh = 0;
+    let elecCost = 0;
+    let filCost = 0;
+    let totalMinutes = 0;
+    let totalFilamentWeight = 0;
+    let totalFilamentChanges = 0;
 
-    const surgeHours = plates * (8 / 60); // 8 minutes per plate
-    const remainingHours = Math.max(0, totalHours - surgeHours);
+    state.plates.forEach(plate => {
+      const pFilaChangesCount = Math.max(1, parseInt(plate.filamentChangeCount) || 0);
+      totalFilamentChanges += pFilaChangesCount;
 
-    const surgeKWh = surgeHours * (config?.powerSurgeKwh || 1.3);
-    const normalKWh = remainingHours * (config?.printerKwhPerHour || 0.2);
-    const totalKWh = surgeKWh + normalKWh;
+      const hours = Math.max(0, parseFloat(plate.printTimeHours) || 0);
+      const minutes = Math.max(0, parseFloat(plate.printTimeMinutes) || 0);
+      const plateMinutes = (hours * 60) + minutes;
+      totalMinutes += plateMinutes;
 
-    return { totalKWh, cost: (totalKWh * (config?.baseCostRate || 14.16)) + (filaments * (config?.filamentChangeCost || 0.1)) };
+      const totalPlateHours = plateMinutes / 60;
+
+      const surgeHours = 8 / 60; // 8 minutes per plate
+      let surgeKWh = 0;
+      let normalKWh = 0;
+      
+      if (totalPlateHours > 0) {
+        surgeKWh = surgeHours * (config?.powerSurgeKwh || 1.3);
+        const remainingHours = Math.max(0, totalPlateHours - surgeHours);
+        normalKWh = remainingHours * (config?.printerKwhPerHour || 0.2);
+      } else {
+        surgeKWh = surgeHours * (config?.powerSurgeKwh || 1.3);
+        normalKWh = 0;
+      }
+      totalKWh += (surgeKWh + normalKWh);
+
+      plate.filaments.forEach(f => {
+         const weight = Math.max(0, parseFloat(f.weight) || 0);
+         totalFilamentWeight += weight;
+         filCost += (weight / 1000) * Math.max(0, parseFloat(f.costPerKg) || 0);
+      });
+    });
+
+    elecCost = (totalKWh * (config?.baseCostRate || 14.16)) + (totalFilamentChanges * (config?.filamentChangeCost || 0.1));
+
+    return { totalKWh, elecCost, filCost, totalMinutes, totalFilamentWeight };
   };
 
-  const elec = calcElectricity();
-  const filCost = state.filaments.reduce((sum, f) =>
-    sum + (Math.max(0, parseFloat(f.weight) || 0) / 1000) * Math.max(0, parseFloat(f.costPerKg) || 0)
-    , 0);
+  const { totalKWh, elecCost, filCost, totalMinutes, totalFilamentWeight } = calcElectricityAndMaterials();
 
-  const minutesTotal = (Math.max(0, parseFloat(state.printTimeHours) || 0) * 60) + Math.max(0, parseFloat(state.printTimeMinutes) || 0);
-  const wearTearCost = (minutesTotal / 15) * (config?.wearTearCostPer15Min || 2.5);
+  const wearTearCost = (totalMinutes / 15) * (config?.wearTearCostPer15Min || 2.5);
 
-  const rawOpsCost = elec.cost + filCost + wearTearCost;
+  const rawOpsCost = elecCost + filCost + wearTearCost;
   const failureBufferCost = rawOpsCost * ((config?.failureRatePercent || 10) / 100);
 
   const laborCost = state.labors.reduce((sum, lab) => sum + (parseFloat(lab.hours || 0) * parseFloat(lab.rate || 0)), 0);
@@ -152,8 +234,8 @@ export default function AdvancedPriceChecker({ config }) {
   const confirmOrderMutation = useMutation({
     mutationFn: async () => {
       const financial_breakdown = {
-        electricityCost: elec.cost,
-        totalKWh: elec.totalKWh,
+        electricityCost: elecCost,
+        totalKWh: totalKWh,
         filamentCost: filCost,
         wearTearCost: wearTearCost,
         failureBufferCost: failureBufferCost,
@@ -170,9 +252,9 @@ export default function AdvancedPriceChecker({ config }) {
         p_client_name: state.clientName,
         p_client_phone: state.clientPhone,
         p_item_name: state.itemName,
-        p_filament_weight: state.filaments.reduce((sum, f) => sum + parseFloat(f.weight || 0), 0),
-        p_print_time: (state.printTimeHours || 0) + ((state.printTimeMinutes || 0) / 60),
-        p_plates: parseInt(state.numberOfPlates) || 1,
+        p_filament_weight: totalFilamentWeight,
+        p_print_time: totalMinutes / 60,
+        p_plates: state.plates.length,
         p_labor_hours: state.labors.reduce((sum, lab) => sum + parseFloat(lab.hours || 0), 0),
         p_total_price: finalPrice,
         p_financial_breakdown: financial_breakdown
@@ -240,145 +322,152 @@ export default function AdvancedPriceChecker({ config }) {
           </div>
         </section>
 
-        {/* Section: Operational Costs */}
+        {/* Section: Plates & Operations */}
         <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden">
-          <div className="px-5 py-4 border-b border-zinc-200">
-            <h2 className="text-sm font-semibold text-zinc-900">2. Operational Metrics</h2>
+          <div className="px-5 py-4 border-b border-zinc-200 flex items-center justify-between bg-zinc-50">
+            <h2 className="text-sm font-semibold text-zinc-900 uppercase tracking-widest flex items-center gap-2">
+              <Layers className="w-4 h-4 text-zinc-500" /> 2. Plates & Operations
+            </h2>
+            <button
+              onClick={() => dispatch({ type: 'ADD_PLATE' })}
+              className="text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 px-2 py-1 rounded transition-colors flex items-center gap-1 shadow-sm"
+            >
+              <Plus className="w-3 h-3" /> Add Plate
+            </button>
           </div>
-          <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-5">
-
-            <div className="group relative">
-              <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">
-                Plates Count
-                <div className="hidden group-hover:block ml-2 w-48 bg-zinc-800 text-zinc-50 text-[11px] rounded p-1.5 text-center absolute bottom-full mb-1 left-0 shadow-lg pointer-events-none z-10 normal-case tracking-normal">
-                  Allocates {config?.powerSurgeKwh || 1.3}kW surge load per plate for 8 minutes.
+          
+          <div className="p-5 space-y-6">
+            {state.plates.map((plate, index) => (
+              <div key={plate.id} className="border border-zinc-200 rounded-lg overflow-hidden bg-zinc-50/50 shadow-sm transition-all">
+                <div className="px-4 py-3 border-b border-zinc-200 bg-white flex justify-between items-center">
+                   <h3 className="text-sm font-bold tracking-tight text-zinc-800">Plate {index + 1}</h3>
+                   {state.plates.length > 1 && (
+                     <button
+                       onClick={() => dispatch({ type: 'REMOVE_PLATE', id: plate.id })}
+                       className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors tooltip relative group"
+                     >
+                       <Trash2 className="w-4 h-4" />
+                       <span className="hidden group-hover:block absolute bottom-full mb-2 right-0 whitespace-nowrap bg-zinc-800 text-white text-[10px] px-2 py-1 rounded">Remove Plate</span>
+                     </button>
+                   )}
                 </div>
-              </label>
-              <div className="relative">
-                <input
-                  type="number" name="numberOfPlates" min="1"
-                  value={state.numberOfPlates} onChange={handleNum}
-                  className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
-                />
-                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">qty</span>
+
+                <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-5 border-b border-zinc-200 bg-zinc-50/50">
+                  <div className="flex flex-col gap-2">
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Print Timeline</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="relative">
+                        <input
+                          type="number" min="0" step="1"
+                          value={plate.printTimeHours} 
+                          onChange={(e) => dispatch({ type: 'UPDATE_PLATE', id: plate.id, field: 'printTimeHours', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                        />
+                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">hrs</span>
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="number" min="0" max="59" step="1"
+                          value={plate.printTimeMinutes} 
+                          onChange={(e) => dispatch({ type: 'UPDATE_PLATE', id: plate.id, field: 'printTimeMinutes', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                        />
+                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">mins</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="group relative">
+                    <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">
+                      Filament Changes
+                      <div className="hidden group-hover:block ml-2 w-48 bg-zinc-800 text-zinc-50 text-[11px] rounded p-1.5 text-center absolute bottom-full mb-1 left-0 shadow-lg pointer-events-none z-10 normal-case tracking-normal">
+                         Allocates {config?.filamentChangeCost || 0.1} PHP per filament change.
+                      </div>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number" min="0"
+                        value={plate.filamentChangeCount}
+                        onChange={(e) => dispatch({ type: 'UPDATE_PLATE', id: plate.id, field: 'filamentChangeCount', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                        className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                      />
+                      <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">qty</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-white">
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Filaments Used</label>
+                    <button
+                      onClick={() => dispatch({ type: 'ADD_PLATE_FILAMENT', plateId: plate.id })}
+                      className="text-[11px] font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 px-2 py-1.5 rounded transition-colors flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" /> Add Filament
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {plate.filaments.map((filament, fIndex) => (
+                      <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end bg-zinc-50/50 p-3 rounded border border-zinc-100">
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Filament {fIndex + 1} Weight</label>
+                          <div className="relative">
+                            <input
+                              type="number" min="0" value={filament.weight}
+                              onChange={(e) => dispatch({ type: 'UPDATE_PLATE_FILAMENT', plateId: plate.id, filamentId: filament.id, field: 'weight', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                              className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-9 font-medium"
+                            />
+                            <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">g</span>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Cost Rate</label>
+                          <div className="relative">
+                            <input
+                              type="number" min="0" value={filament.costPerKg}
+                              onChange={(e) => dispatch({ type: 'UPDATE_PLATE_FILAMENT', plateId: plate.id, filamentId: filament.id, field: 'costPerKg', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                              className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                            />
+                            <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP/kg</span>
+                          </div>
+                        </div>
+                        <div className="flex h-[38px] items-center">
+                          {plate.filaments.length > 1 && (
+                            <button
+                              onClick={() => dispatch({ type: 'REMOVE_PLATE_FILAMENT', plateId: plate.id, filamentId: filament.id })}
+                              className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Print Timeline</label>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="relative">
-                  <input
-                    type="number" name="printTimeHours" min="0" step="1"
-                    value={state.printTimeHours} onChange={handleNum}
-                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
-                  />
-                  <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">hrs</span>
-                </div>
-                <div className="relative">
-                  <input
-                    type="number" name="printTimeMinutes" min="0" max="59" step="1"
-                    value={state.printTimeMinutes} onChange={handleNum}
-                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
-                  />
-                  <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">mins</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="group relative">
-              <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">
-                Total Filament Change Count
-                <div className="hidden group-hover:block ml-2 w-48 bg-zinc-800 text-zinc-50 text-[11px] rounded p-1.5 text-center absolute bottom-full mb-1 left-0 shadow-lg pointer-events-none z-10 normal-case tracking-normal">
-                  Allocates {config?.filamentChangeCost || 0.1} PHP per filament change.
-                </div>
-              </label>
-              <div className="relative">
-                <input
-                  type="number" name="filamentChangeCount" min="1"
-                  value={state.filamentChangeCount} onChange={handleNum}
-                  className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
-                />
-                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">qty</span>
-              </div>
-            </div>
-
+            ))}
           </div>
         </section>
 
-        {/* Section: Direct Materials */}
+        {/* Section: Supplementary Items */}
         <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden">
-          <div className="px-5 py-4 border-b border-zinc-200">
-            <h2 className="text-sm font-semibold text-zinc-900">3. Direct Materials</h2>
+          <div className="px-5 py-4 border-b border-zinc-200 flex items-center justify-between bg-zinc-50">
+            <h2 className="text-sm font-semibold text-zinc-900 uppercase tracking-widest">3. Supplementary Items</h2>
+            <button
+               onClick={() => dispatch({ type: 'ADD_MATERIAL' })}
+               className="text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 px-2 py-1 rounded transition-colors flex items-center gap-1 shadow-sm"
+            >
+               <Plus className="w-3 h-3" /> Add Item
+            </button>
           </div>
           <div className="p-5">
-            <div className="border-b border-zinc-100 pb-5 mb-5">
-              <div className="flex items-center justify-between mb-3">
-                <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Filaments Used</label>
-                <button
-                  onClick={() => dispatch({ type: 'ADD_FILAMENT' })}
-                  className="text-xs font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 px-2 py-1 rounded transition-colors flex items-center gap-1"
-                >
-                  <Plus className="w-3 h-3" /> Add Filament
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                {state.filaments.map((filament, index) => (
-                  <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Filament {index + 1} Weight</label>
-                      <div className="relative">
-                        <input
-                          type="number" min="0" value={filament.weight}
-                          onChange={(e) => dispatch({ type: 'UPDATE_FILAMENT', id: filament.id, field: 'weight', value: e.target.value === '' ? '' : Number(e.target.value) })}
-                          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-9 font-medium"
-                        />
-                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">g</span>
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Cost Rate</label>
-                      <div className="relative">
-                        <input
-                          type="number" min="0" value={filament.costPerKg}
-                          onChange={(e) => dispatch({ type: 'UPDATE_FILAMENT', id: filament.id, field: 'costPerKg', value: e.target.value === '' ? '' : Number(e.target.value) })}
-                          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
-                        />
-                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP/kg</span>
-                      </div>
-                    </div>
-                    <div>
-                      {state.filaments.length > 1 && (
-                        <button
-                          onClick={() => dispatch({ type: 'REMOVE_FILAMENT', id: filament.id })}
-                          className="p-2.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-200 rounded transition-colors"
-                        >
-                          <Trash2 className="w-5 h-5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="border-t border-zinc-100 pt-5">
-              <div className="flex items-center justify-between mb-3">
-                <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Supplementary Items</label>
-                <button
-                  onClick={() => dispatch({ type: 'ADD_MATERIAL' })}
-                  className="text-xs font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 px-2 py-1 rounded transition-colors flex items-center gap-1"
-                >
-                  <Plus className="w-3 h-3" /> Add Item
-                </button>
-              </div>
-
-              {state.materials.length === 0 ? (
-                <div className="py-4 text-xs text-zinc-400 text-center border border-dashed border-zinc-200 rounded bg-zinc-50">
-                  No supplementary items.
-                </div>
-              ) : (
+            {state.materials.length === 0 ? (
+               <div className="py-4 text-xs text-zinc-400 text-center border border-dashed border-zinc-200 rounded bg-zinc-50">
+                 No supplementary items.
+               </div>
+            ) : (
                 <div className="space-y-2">
                   {state.materials.map(mat => (
                     <div key={mat.id} className="flex gap-2 items-center">
@@ -406,14 +495,14 @@ export default function AdvancedPriceChecker({ config }) {
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
+            )}
           </div>
         </section>
 
+        {/* Section: Processing & Labor */}
         <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden mb-6">
           <div className="px-5 py-4 border-b border-zinc-200 flex items-center justify-between bg-zinc-50">
-            <h2 className="text-sm font-semibold text-zinc-900">4. Processing & Labor</h2>
+            <h2 className="text-sm font-semibold text-zinc-900 uppercase tracking-widest">4. Processing & Labor</h2>
             <button
               onClick={() => dispatch({ type: 'ADD_LABOR', defaultRate: config?.hourlyLaborRate || 250 })}
               className="text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 px-2 py-1 rounded transition-colors flex items-center gap-1 shadow-sm"
@@ -484,7 +573,7 @@ export default function AdvancedPriceChecker({ config }) {
         {/* Section: Packaging & Shipping */}
         <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden mb-8">
           <div className="px-5 py-4 border-b border-zinc-200">
-            <h2 className="text-sm font-semibold text-zinc-900">5. Packaging & Shipping</h2>
+            <h2 className="text-sm font-semibold text-zinc-900 uppercase tracking-widest">5. Packaging & Shipping</h2>
           </div>
           <div className="p-5 grid grid-cols-1 md:grid-cols-3 gap-5">
             <div>
@@ -543,9 +632,9 @@ export default function AdvancedPriceChecker({ config }) {
               </div>
 
               <div className="flex justify-between items-center group">
-                <span>Utility & Infrastructure <span className="text-xs text-zinc-400 font-normal">({elec.totalKWh.toFixed(1)} kWh)</span></span>
+                <span>Utility & Infrastructure <span className="text-xs text-zinc-400 font-normal">({totalKWh.toFixed(1)} kWh)</span></span>
                 <span className="text-zinc-900 group-hover:text-black">
-                  {elec.cost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {elecCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
 
