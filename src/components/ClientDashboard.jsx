@@ -3,7 +3,8 @@ import AdvancedPriceChecker from './AdvancedPriceChecker';
 import MetricsView from './MetricsView';
 import ConfigurationsView from './ConfigurationsView';
 import CompletedOrdersView from './CompletedOrdersView';
-import { ChevronRight, Search, Menu, Settings, Box, Factory, LogOut, Archive } from 'lucide-react';
+import InventoryView from './InventoryView';
+import { ChevronRight, Search, Menu, Settings, Box, Factory, LogOut, Archive, Package } from 'lucide-react';
 
 export default function ClientDashboard() {
   const [selectedClient, setSelectedClient] = useState('John Doe Studios');
@@ -68,6 +69,14 @@ export default function ClientDashboard() {
           >
             <Archive className="w-4 h-4 shrink-0 transition-transform group-hover:scale-110" />
             <span className="ml-3 font-medium text-sm hidden sm:block">Completed Archives</span>
+          </button>
+
+          <button 
+            onClick={() => setActiveTab('Inventory')}
+            className={`w-full flex items-center px-2 sm:px-3 py-2 rounded transition-colors group ${activeTab === 'Inventory' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50'}`}
+          >
+            <Package className="w-4 h-4 shrink-0 transition-transform group-hover:scale-110" />
+            <span className="ml-3 font-medium text-sm hidden sm:block">Inventory</span>
           </button>
 
           <button 
@@ -159,6 +168,8 @@ export default function ClientDashboard() {
             {activeTab === 'Dashboard' && <MetricsView />}
             
             {activeTab === 'Archives' && <CompletedOrdersView />}
+
+            {activeTab === 'Inventory' && <InventoryView />}
             
             {activeTab === 'Configurations' && <ConfigurationsView config={systemConfig} setConfig={setSystemConfig} />}
           </div>
