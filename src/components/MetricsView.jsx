@@ -13,15 +13,24 @@ export default function MetricsView() {
     queryKey: ['dashboard-data'],
     queryFn: async () => {
       // Direct use of sanitized supabase client
-      const { data, error } = await supabase.rpc('get_dashboard_stats');
-      if (error) throw error;
+      const { data: statsData, error: statsError } = await supabase.rpc('get_dashboard_stats');
+      if (statsError) throw statsError;
+
+      const { data: ordersData, error: ordersError } = await supabase
+        .from('orders')
+        .select('*, clients(*), items(name)')
+        .neq('status', 'Completed')
+        .order('created_at', { ascending: false })
+        .limit(50);
+        
+      if (ordersError) throw ordersError;
 
       return {
-        orders: data.recent_orders || [],
+        orders: ordersData || [],
         metrics: {
-          activeOrders: data.active_orders || 0,
-          totalClients: data.total_clients || 0,
-          totalItems: data.total_items || 0
+          activeOrders: statsData.active_orders || 0,
+          totalClients: statsData.total_clients || 0,
+          totalItems: statsData.total_items || 0
         }
       };
     },
@@ -166,6 +175,7 @@ export default function MetricsView() {
               <tr>
                 <th className="px-6 py-4 font-semibold">Order ID</th>
                 <th className="px-6 py-4 font-semibold">Client</th>
+                <th className="px-6 py-4 font-semibold">Item</th>
                 <th className="px-6 py-4 font-semibold">Date Logged</th>
                 <th className="px-6 py-4 font-semibold text-center">Status</th>
                 <th className="px-6 py-4 font-semibold text-right">Actions</th>
@@ -176,6 +186,7 @@ export default function MetricsView() {
                 [1, 2, 3, 4, 5].map(i => (
                   <tr key={i}>
                     <td className="px-6 py-4"><div className="h-4 w-20 bg-zinc-100 rounded pulse-light" /></td>
+                    <td className="px-6 py-4"><div className="h-4 w-32 bg-zinc-100 rounded pulse-light" /></td>
                     <td className="px-6 py-4"><div className="h-4 w-32 bg-zinc-100 rounded pulse-light" /></td>
                     <td className="px-6 py-4"><div className="h-4 w-24 bg-zinc-100 rounded pulse-light" /></td>
                     <td className="px-6 py-4 flex justify-center"><div className="h-6 w-24 bg-zinc-100 rounded-full pulse-light" /></td>
@@ -194,6 +205,9 @@ export default function MetricsView() {
                   <td className="px-6 py-4 whitespace-nowrap font-medium text-zinc-700">
                     {order.clients?.name || 'Unknown Client'}
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-zinc-700 font-medium">
+                    {order.items?.[0]?.name || 'Unknown Item'}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-zinc-500">
                     {new Date(order.created_at).toLocaleDateString()}
                   </td>
@@ -210,7 +224,7 @@ export default function MetricsView() {
               
               {!isPending && orders.length === 0 && (
                 <tr>
-                  <td colSpan="5" className="px-6 py-10 text-center text-zinc-500">
+                  <td colSpan="6" className="px-6 py-10 text-center text-zinc-500">
                     No active orders found in the pipeline. Start building a quote!
                   </td>
                 </tr>

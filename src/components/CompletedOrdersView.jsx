@@ -11,7 +11,7 @@ export default function CompletedOrdersView() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('orders')
-        .select('*, clients(*)')
+        .select('*, clients(*), items(name)')
         .eq('status', 'Completed')
         .order('created_at', { ascending: false })
         .limit(50); // Optimization: Limit to last 50 for faster load
@@ -39,6 +39,7 @@ export default function CompletedOrdersView() {
               <tr>
                 <th className="px-6 py-4 font-semibold">Order ID</th>
                 <th className="px-6 py-4 font-semibold">Client</th>
+                <th className="px-6 py-4 font-semibold">Item</th>
                 <th className="px-6 py-4 font-semibold">Completion Date</th>
                 <th className="px-6 py-4 font-semibold text-center">Status</th>
               </tr>
@@ -49,6 +50,7 @@ export default function CompletedOrdersView() {
                 [1, 2, 3].map(i => (
                   <tr key={i}>
                     <td className="px-6 py-4"><div className="h-4 w-20 bg-zinc-100 rounded pulse-light" /></td>
+                    <td className="px-6 py-4"><div className="h-4 w-32 bg-zinc-100 rounded pulse-light" /></td>
                     <td className="px-6 py-4"><div className="h-4 w-32 bg-zinc-100 rounded pulse-light" /></td>
                     <td className="px-6 py-4"><div className="h-4 w-24 bg-zinc-100 rounded pulse-light" /></td>
                     <td className="px-6 py-4 flex justify-center"><div className="h-6 w-24 bg-zinc-100 rounded-full pulse-light" /></td>
@@ -67,6 +69,9 @@ export default function CompletedOrdersView() {
                     <td className="px-6 py-4 whitespace-nowrap font-medium text-zinc-700">
                       {order.clients?.name || 'Unknown Client'}
                     </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-zinc-700">
+                      {order.items?.[0]?.name || 'Unknown Item'}
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-zinc-500">
                       {new Date(order.created_at).toLocaleDateString()}
                     </td>
@@ -80,7 +85,7 @@ export default function CompletedOrdersView() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="4" className="px-6 py-10 text-center text-zinc-500">
+                  <td colSpan="5" className="px-6 py-10 text-center text-zinc-500">
                     <CheckCircle2 className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
                     No completed orders found in the database.
                   </td>
