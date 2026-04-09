@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabaseClient';
 import { FileText, TrendingUp, Users, Printer, Clock, MoreHorizontal, CheckCircle2 } from 'lucide-react';
+import OrderDetailsModal from './OrderDetailsModal';
 
 export default function MetricsView() {
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
   const queryClient = useQueryClient();
 
   // Optimized parallel fetch using React Query
@@ -79,7 +82,7 @@ export default function MetricsView() {
 
     return (
       <button 
-        onClick={onClick}
+        onClick={(e) => { e.stopPropagation(); onClick(); }}
         className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider border transition-colors cursor-pointer ${colorClass}`}
       >
         {status}
@@ -180,7 +183,11 @@ export default function MetricsView() {
                   </tr>
                 ))
               ) : orders.map((order) => (
-                <tr key={order.id} className="hover:bg-zinc-50 transition-colors">
+                <tr 
+                  key={order.id} 
+                  className="hover:bg-zinc-50 transition-colors cursor-pointer"
+                  onClick={() => setSelectedOrderId(order.id)}
+                >
                   <td className="px-6 py-4 whitespace-nowrap font-semibold text-zinc-900">
                     {order.id.split('-')[0].toUpperCase()}...
                   </td>
@@ -213,6 +220,13 @@ export default function MetricsView() {
         </div>
       </div>
       
+      {/* Order Details Modal Overlay */}
+      {selectedOrderId && (
+        <OrderDetailsModal 
+          orderId={selectedOrderId} 
+          onClose={() => setSelectedOrderId(null)} 
+        />
+      )}
     </div>
   );
 }

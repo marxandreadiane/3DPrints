@@ -9,19 +9,47 @@ const initialState = {
   clientName: '',
   clientPhone: '',
   itemName: '',
-  filamentWeight: 0,
-  filamentCostPerKg: 1000,
+  filaments: [{ id: Date.now(), weight: 0, costPerKg: 700 }],
+  filamentChangeCount: 0,
   printTimeHours: 0,
+  printTimeMinutes: 0,
   numberOfPlates: 1,
-  laborHours: 0,
-  laborRatePerHour: 250,
+  labors: [],
   materials: [],
+  packagingCost: 0,
+  shippingCost: 0,
+  miscellaneousCost: 0,
 };
+
+function init(config) {
+  return {
+    ...initialState,
+    labors: [{ id: Date.now(), type: '3D Modeling & Printing', hours: 0, rate: config?.hourlyLaborRate || 250 }]
+  };
+}
 
 function formReducer(state, action) {
   switch (action.type) {
     case 'UPDATE_FIELD':
       return { ...state, [action.field]: action.value };
+    case 'ADD_FILAMENT':
+      return {
+        ...state,
+        filaments: [...state.filaments, { id: Date.now(), weight: 0, costPerKg: 700 }],
+        filamentChangeCount: Number(state.filamentChangeCount || 0) + 1
+      };
+    case 'UPDATE_FILAMENT':
+      return {
+        ...state,
+        filaments: state.filaments.map(f =>
+          f.id === action.id ? { ...f, [action.field]: action.value } : f
+        )
+      };
+    case 'REMOVE_FILAMENT':
+      return {
+        ...state,
+        filaments: state.filaments.filter(f => f.id !== action.id)
+      };
     case 'ADD_MATERIAL':
       return {
         ...state,
@@ -36,16 +64,32 @@ function formReducer(state, action) {
       };
     case 'REMOVE_MATERIAL':
       return {
-        ...state,
         materials: state.materials.filter(m => m.id !== action.id)
+      };
+    case 'ADD_LABOR':
+      return {
+        ...state,
+        labors: [...state.labors, { id: Date.now(), type: '3D Modeling & Printing', hours: 0, rate: action.defaultRate || 250 }]
+      };
+    case 'UPDATE_LABOR':
+      return {
+        ...state,
+        labors: state.labors.map(l =>
+          l.id === action.id ? { ...l, [action.field]: action.value } : l
+        )
+      };
+    case 'REMOVE_LABOR':
+      return {
+        ...state,
+        labors: state.labors.filter(l => l.id !== action.id)
       };
     default:
       return state;
   }
 }
 
-export default function AdvancedPriceChecker() {
-  const [state, dispatch] = useReducer(formReducer, initialState);
+export default function AdvancedPriceChecker({ config }) {
+  const [state, dispatch] = useReducer(formReducer, config, init);
   const queryClient = useQueryClient();
 
   const [showModal, setShowModal] = useState(false);
@@ -57,25 +101,44 @@ export default function AdvancedPriceChecker() {
 
   const calcElectricity = () => {
     const plates = Math.max(1, parseInt(state.numberOfPlates) || 0);
+    const filaments = Math.max(1, parseInt(state.filamentChangeCount) || 0);
     const hours = Math.max(0, parseFloat(state.printTimeHours) || 0);
-    const totalKWh = (plates * 1.2) + (hours * 0.2);
-    return { totalKWh, cost: totalKWh * 14.16 };
+    const minutes = Math.max(0, parseFloat(state.printTimeMinutes) || 0);
+    const totalHours = hours + (minutes / 60);
+
+    const surgeHours = plates * (8 / 60); // 8 minutes per plate
+    const remainingHours = Math.max(0, totalHours - surgeHours);
+
+    const surgeKWh = surgeHours * (config?.powerSurgeKwh || 1.3);
+    const normalKWh = remainingHours * (config?.printerKwhPerHour || 0.2);
+    const totalKWh = surgeKWh + normalKWh;
+
+    return { totalKWh, cost: (totalKWh * (config?.baseCostRate || 14.16)) + (filaments * (config?.filamentChangeCost || 0.1)) };
   };
 
   const elec = calcElectricity();
-  const filCost = (Math.max(0, parseFloat(state.filamentWeight) || 0) / 1000) *
-    Math.max(0, parseFloat(state.filamentCostPerKg) || 0);
-  const laborCost = Math.max(0, parseFloat(state.laborHours) || 0) *
-    Math.max(0, parseFloat(state.laborRatePerHour) || 0);
+  const filCost = state.filaments.reduce((sum, f) =>
+    sum + (Math.max(0, parseFloat(f.weight) || 0) / 1000) * Math.max(0, parseFloat(f.costPerKg) || 0)
+    , 0);
+
+  const minutesTotal = (Math.max(0, parseFloat(state.printTimeHours) || 0) * 60) + Math.max(0, parseFloat(state.printTimeMinutes) || 0);
+  const wearTearCost = (minutesTotal / 15) * (config?.wearTearCostPer15Min || 2.5);
+
+  const rawOpsCost = elec.cost + filCost + wearTearCost;
+  const failureBufferCost = rawOpsCost * ((config?.failureRatePercent || 10) / 100);
+
+  const laborCost = state.labors.reduce((sum, lab) => sum + (parseFloat(lab.hours || 0) * parseFloat(lab.rate || 0)), 0);
   const matCost = state.materials.reduce((sum, mat) => sum + (parseFloat(mat.cost) || 0), 0);
+  const logisticsCost = (parseFloat(state.packagingCost) || 0) + (parseFloat(state.shippingCost) || 0) + (parseFloat(state.miscellaneousCost) || 0);
 
   const servicesCost =
-    (additionalServices.sanding ? 500 : 0) +
-    (additionalServices.painting ? 800 : 0) +
-    (additionalServices.assembly ? 350 : 0);
+    (additionalServices.sanding ? (config?.sandingCost || 500) : 0) +
+    (additionalServices.painting ? (config?.paintingCost || 800) : 0) +
+    (additionalServices.assembly ? (config?.assemblyCost || 350) : 0);
 
-  const basePrice = elec.cost + filCost + laborCost + matCost;
-  const finalPrice = basePrice + servicesCost;
+  const basePriceWithFailure = rawOpsCost + failureBufferCost + laborCost + matCost + logisticsCost + servicesCost;
+  const markupCost = basePriceWithFailure * ((config?.markupPercent || 100) / 100);
+  const finalPrice = basePriceWithFailure + markupCost;
 
   const handleNum = (e) => {
     const val = e.target.value === '' ? '' : Number(e.target.value);
@@ -88,14 +151,31 @@ export default function AdvancedPriceChecker() {
 
   const confirmOrderMutation = useMutation({
     mutationFn: async () => {
+      const financial_breakdown = {
+        electricityCost: elec.cost,
+        totalKWh: elec.totalKWh,
+        filamentCost: filCost,
+        wearTearCost: wearTearCost,
+        failureBufferCost: failureBufferCost,
+        laborCost: laborCost,
+        supplementaryMatCost: matCost,
+        logisticsCost: logisticsCost,
+        servicesCost: servicesCost,
+        markupCost: markupCost,
+        failureRatePercent: config?.failureRatePercent || 10,
+        markupPercent: config?.markupPercent || 30
+      };
+
       const { data: orderId, error: rpcErr } = await supabase.rpc('create_order_with_items', {
         p_client_name: state.clientName,
         p_client_phone: state.clientPhone,
         p_item_name: state.itemName,
-        p_filament_weight: state.filamentWeight || 0,
-        p_print_time: state.printTimeHours || 0,
+        p_filament_weight: state.filaments.reduce((sum, f) => sum + parseFloat(f.weight || 0), 0),
+        p_print_time: (state.printTimeHours || 0) + ((state.printTimeMinutes || 0) / 60),
         p_plates: parseInt(state.numberOfPlates) || 1,
-        p_labor_hours: state.laborHours || 0
+        p_labor_hours: state.labors.reduce((sum, lab) => sum + parseFloat(lab.hours || 0), 0),
+        p_total_price: finalPrice,
+        p_financial_breakdown: financial_breakdown
       });
 
       if (rpcErr) throw rpcErr;
@@ -171,7 +251,7 @@ export default function AdvancedPriceChecker() {
               <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">
                 Plates Count
                 <div className="hidden group-hover:block ml-2 w-48 bg-zinc-800 text-zinc-50 text-[11px] rounded p-1.5 text-center absolute bottom-full mb-1 left-0 shadow-lg pointer-events-none z-10 normal-case tracking-normal">
-                  Allocates 1.2kWh startup load per plate.
+                  Allocates {config?.powerSurgeKwh || 1.3}kW surge load per plate for 8 minutes.
                 </div>
               </label>
               <div className="relative">
@@ -184,15 +264,42 @@ export default function AdvancedPriceChecker() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Print Timeline</label>
+            <div className="flex flex-col gap-2">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Print Timeline</label>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative">
+                  <input
+                    type="number" name="printTimeHours" min="0" step="1"
+                    value={state.printTimeHours} onChange={handleNum}
+                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                  />
+                  <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">hrs</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number" name="printTimeMinutes" min="0" max="59" step="1"
+                    value={state.printTimeMinutes} onChange={handleNum}
+                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                  />
+                  <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">mins</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="group relative">
+              <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">
+                Total Filament Change Count
+                <div className="hidden group-hover:block ml-2 w-48 bg-zinc-800 text-zinc-50 text-[11px] rounded p-1.5 text-center absolute bottom-full mb-1 left-0 shadow-lg pointer-events-none z-10 normal-case tracking-normal">
+                  Allocates {config?.filamentChangeCost || 0.1} PHP per filament change.
+                </div>
+              </label>
               <div className="relative">
                 <input
-                  type="number" name="printTimeHours" min="0" step="0.5"
-                  value={state.printTimeHours} onChange={handleNum}
+                  type="number" name="filamentChangeCount" min="1"
+                  value={state.filamentChangeCount} onChange={handleNum}
                   className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
                 />
-                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">hrs</span>
+                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">qty</span>
               </div>
             </div>
 
@@ -205,28 +312,54 @@ export default function AdvancedPriceChecker() {
             <h2 className="text-sm font-semibold text-zinc-900">3. Direct Materials</h2>
           </div>
           <div className="p-5">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-6">
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Filament Weight</label>
-                <div className="relative">
-                  <input
-                    type="number" name="filamentWeight" min="0"
-                    value={state.filamentWeight} onChange={handleNum}
-                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-9 font-medium"
-                  />
-                  <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">g</span>
-                </div>
+            <div className="border-b border-zinc-100 pb-5 mb-5">
+              <div className="flex items-center justify-between mb-3">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Filaments Used</label>
+                <button
+                  onClick={() => dispatch({ type: 'ADD_FILAMENT' })}
+                  className="text-xs font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 px-2 py-1 rounded transition-colors flex items-center gap-1"
+                >
+                  <Plus className="w-3 h-3" /> Add Filament
+                </button>
               </div>
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Cost Rate</label>
-                <div className="relative">
-                  <input
-                    type="number" name="filamentCostPerKg" min="0"
-                    value={state.filamentCostPerKg} onChange={handleNum}
-                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
-                  />
-                  <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP/kg</span>
-                </div>
+
+              <div className="space-y-4">
+                {state.filaments.map((filament, index) => (
+                  <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Filament {index + 1} Weight</label>
+                      <div className="relative">
+                        <input
+                          type="number" min="0" value={filament.weight}
+                          onChange={(e) => dispatch({ type: 'UPDATE_FILAMENT', id: filament.id, field: 'weight', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-9 font-medium"
+                        />
+                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">g</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Cost Rate</label>
+                      <div className="relative">
+                        <input
+                          type="number" min="0" value={filament.costPerKg}
+                          onChange={(e) => dispatch({ type: 'UPDATE_FILAMENT', id: filament.id, field: 'costPerKg', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                        />
+                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP/kg</span>
+                      </div>
+                    </div>
+                    <div>
+                      {state.filaments.length > 1 && (
+                        <button
+                          onClick={() => dispatch({ type: 'REMOVE_FILAMENT', id: filament.id })}
+                          className="p-2.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-200 rounded transition-colors"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -278,32 +411,110 @@ export default function AdvancedPriceChecker() {
           </div>
         </section>
 
-        {/* Section: Labor */}
+        <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden mb-6">
+          <div className="px-5 py-4 border-b border-zinc-200 flex items-center justify-between bg-zinc-50">
+            <h2 className="text-sm font-semibold text-zinc-900">4. Processing & Labor</h2>
+            <button
+              onClick={() => dispatch({ type: 'ADD_LABOR', defaultRate: config?.hourlyLaborRate || 250 })}
+              className="text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 px-2 py-1 rounded transition-colors flex items-center gap-1 shadow-sm"
+            >
+              <Plus className="w-3 h-3" /> Add Labor
+            </button>
+          </div>
+          <div className="p-5">
+            {state.labors.length === 0 ? (
+              <div className="py-4 text-xs text-zinc-400 text-center border border-dashed border-zinc-200 rounded bg-zinc-50">
+                No labor items tracked.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {state.labors.map((lab) => (
+                  <div key={lab.id} className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Operation Phase</label>
+                      <select
+                        value={lab.type}
+                        onChange={(e) => dispatch({ type: 'UPDATE_LABOR', id: lab.id, field: 'type', value: e.target.value })}
+                        className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900"
+                      >
+                        <option value="3D Modeling & Printing">3D Modeling & Printing</option>
+                        <option value="Painting">Painting</option>
+                        <option value="Sanding">Sanding</option>
+                        <option value="Assembly">Assembly</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Duration</label>
+                      <div className="relative">
+                        <input
+                          type="number" min="0" step="0.5" value={lab.hours}
+                          onChange={(e) => dispatch({ type: 'UPDATE_LABOR', id: lab.id, field: 'hours', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-10 font-medium"
+                        />
+                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">hrs</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Rate</label>
+                      <div className="relative">
+                        <input
+                          type="number" min="0" value={lab.rate}
+                          onChange={(e) => dispatch({ type: 'UPDATE_LABOR', id: lab.id, field: 'rate', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                          className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-10 font-medium"
+                        />
+                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">/hr</span>
+                      </div>
+                    </div>
+                    <div>
+                      <button
+                        onClick={() => dispatch({ type: 'REMOVE_LABOR', id: lab.id })}
+                        className="p-2.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-200 rounded transition-colors"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Section: Packaging & Shipping */}
         <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden mb-8">
           <div className="px-5 py-4 border-b border-zinc-200">
-            <h2 className="text-sm font-semibold text-zinc-900">4. Processing & Labor</h2>
+            <h2 className="text-sm font-semibold text-zinc-900">5. Packaging & Shipping</h2>
           </div>
-          <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div className="p-5 grid grid-cols-1 md:grid-cols-3 gap-5">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Duration</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Packaging</label>
               <div className="relative">
                 <input
-                  type="number" name="laborHours" min="0" step="0.5"
-                  value={state.laborHours} onChange={handleNum}
+                  type="number" name="packagingCost" min="0" value={state.packagingCost} onChange={handleNum}
                   className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
                 />
-                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">hrs</span>
+                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
               </div>
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Hourly Rate</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Shipping Cost</label>
               <div className="relative">
                 <input
-                  type="number" name="laborRatePerHour" min="0"
-                  value={state.laborRatePerHour} onChange={handleNum}
+                  type="number" name="shippingCost" min="0" value={state.shippingCost} onChange={handleNum}
                   className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
                 />
-                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP/hr</span>
+                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Miscellaneous</label>
+              <div className="relative">
+                <input
+                  type="number" name="miscellaneousCost" min="0" value={state.miscellaneousCost} onChange={handleNum}
+                  className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                />
+                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
               </div>
             </div>
           </div>
@@ -338,7 +549,25 @@ export default function AdvancedPriceChecker() {
                 </span>
               </div>
 
-              <div className="flex justify-between items-center group">
+              {wearTearCost > 0 && (
+                <div className="flex justify-between items-center group">
+                  <span>Machine Wear & Tear</span>
+                  <span className="text-zinc-900 group-hover:text-black">
+                    {wearTearCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              )}
+
+              {failureBufferCost > 0 && (
+                <div className="flex justify-between items-center group pt-1">
+                  <span className="italic">Ops Waste Buffer <span className="text-xs text-zinc-400 font-normal">({config?.failureRatePercent || 10}%)</span></span>
+                  <span className="text-zinc-900 group-hover:text-black italic">
+                    +{failureBufferCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              )}
+
+              <div className="flex justify-between items-center group pt-2 border-t border-zinc-100 mt-2">
                 <span>Direct Labor</span>
                 <span className="text-zinc-900 group-hover:text-black">
                   {laborCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -353,9 +582,27 @@ export default function AdvancedPriceChecker() {
                   </span>
                 </div>
               )}
+
+              {(parseFloat(state.packagingCost) > 0 || parseFloat(state.shippingCost) > 0 || parseFloat(state.miscellaneousCost) > 0) && (
+                <div className="flex justify-between items-center group pt-2 border-t border-zinc-100 mt-2">
+                  <span>Logistics & Overheads</span>
+                  <span className="text-zinc-900 group-hover:text-black">
+                    {logisticsCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              )}
+
+              {markupCost > 0 && (
+                <div className="flex justify-between items-center group pt-2 border-t border-zinc-100 mt-2">
+                  <span className="font-semibold text-emerald-600">Markup Profit <span className="text-xs font-normal">({config?.markupPercent || 30}%)</span></span>
+                  <span className="text-emerald-700 font-semibold group-hover:text-emerald-800">
+                    +{markupCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              )}
             </div>
 
-            <div className="pt-5 flex flex-col items-end">
+            <div className="pt-2 flex flex-col items-end">
               <span className="text-xs font-bold uppercase tracking-widest text-zinc-400 mb-1">Total Billable</span>
               <div className="flex items-baseline gap-1">
                 <span className="text-lg font-semibold text-zinc-400">PHP</span>
@@ -408,7 +655,7 @@ export default function AdvancedPriceChecker() {
                   <div className="flex-1">
                     <div className="flex justify-between items-center">
                       <span className="text-sm font-bold text-zinc-900">Post-Print Sanding</span>
-                      <span className="text-xs font-semibold text-zinc-500">+PHP 500.00</span>
+                      <span className="text-xs font-semibold text-zinc-500">+PHP {config?.sandingCost || 500}</span>
                     </div>
                     <p className="text-xs text-zinc-500 mt-1">Full surface smoothing and seam patching.</p>
                   </div>
@@ -427,7 +674,7 @@ export default function AdvancedPriceChecker() {
                   <div className="flex-1">
                     <div className="flex justify-between items-center">
                       <span className="text-sm font-bold text-zinc-900">Primer & Painting</span>
-                      <span className="text-xs font-semibold text-zinc-500">+PHP 800.00</span>
+                      <span className="text-xs font-semibold text-zinc-500">+PHP {config?.paintingCost || 800}</span>
                     </div>
                     <p className="text-xs text-zinc-500 mt-1">Multi-layer airbrushing and protective clear coat.</p>
                   </div>
@@ -446,7 +693,7 @@ export default function AdvancedPriceChecker() {
                   <div className="flex-1">
                     <div className="flex justify-between items-center">
                       <span className="text-sm font-bold text-zinc-900">Hardware Assembly</span>
-                      <span className="text-xs font-semibold text-zinc-500">+PHP 350.00</span>
+                      <span className="text-xs font-semibold text-zinc-500">+PHP {config?.assemblyCost || 350}</span>
                     </div>
                     <p className="text-xs text-zinc-500 mt-1">Gluing, screwing, and final structural tests.</p>
                   </div>

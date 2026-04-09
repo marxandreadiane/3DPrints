@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '../supabaseClient';
 import { CheckCircle2 } from 'lucide-react';
+import OrderDetailsModal from './OrderDetailsModal';
 
 export default function CompletedOrdersView() {
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ['completed-orders'],
     queryFn: async () => {
@@ -53,7 +56,11 @@ export default function CompletedOrdersView() {
                 ))
               ) : orders.length > 0 ? (
                 orders.map((order) => (
-                  <tr key={order.id} className="hover:bg-zinc-50 transition-colors">
+                  <tr 
+                    key={order.id} 
+                    className="hover:bg-zinc-50 transition-colors cursor-pointer"
+                    onClick={() => setSelectedOrderId(order.id)}
+                  >
                     <td className="px-6 py-4 whitespace-nowrap font-semibold text-zinc-900">
                       {order.id.split('-')[0].toUpperCase()}...
                     </td>
@@ -83,6 +90,14 @@ export default function CompletedOrdersView() {
           </table>
         </div>
       </div>
+
+      {/* Order Details Modal Overlay */}
+      {selectedOrderId && (
+        <OrderDetailsModal 
+          orderId={selectedOrderId} 
+          onClose={() => setSelectedOrderId(null)} 
+        />
+      )}
     </div>
   );
 }
