@@ -80,7 +80,15 @@ function createPlate(overrides = {}) {
 }
 
 function createMaterial(overrides = {}) {
-  return { id: makeId('material'), name: '', cost: 0, ...overrides };
+  return {
+    id: makeId('material'),
+    inventoryId: '',
+    name: '',
+    quantity: 1,
+    unit: '',
+    costPerUnit: 0,
+    ...overrides,
+  };
 }
 
 function createLabor(defaultRate, overrides = {}) {
@@ -173,7 +181,7 @@ function toEditorState(order, config) {
     }),
     materials:
       supplementaryMatCost > 0
-        ? [createMaterial({ name: 'Supplementary Materials', cost: supplementaryMatCost })]
+        ? [createMaterial({ name: 'Supplementary Materials', quantity: 1, costPerUnit: supplementaryMatCost })]
         : [],
     labors: [
       createLabor(config.hourlyLaborRate, {
@@ -244,7 +252,9 @@ function calculateTotals(editorState, config) {
     0,
   );
   const supplementaryMatCost = editorState.materials.reduce(
-    (sum, material) => sum + (parseFloat(material.cost) || 0),
+    (sum, material) =>
+      sum +
+      (parseFloat(material.quantity) || 0) * (parseFloat(material.costPerUnit) || 0),
     0,
   );
   const logisticsCost =
@@ -301,9 +311,31 @@ function buildInventoryUsageMap(editorState) {
   return usage;
 }
 
+function buildMaterialUsageMap(editorState) {
+  const usage = {};
+
+  if (!editorState?.materials) return usage;
+
+  editorState.materials.forEach((material) => {
+    if (!material.inventoryId) return;
+    const key = String(material.inventoryId);
+    usage[key] = (usage[key] || 0) + (parseFloat(material.quantity) || 0);
+  });
+
+  return usage;
+}
+
 export default function OrderDetailsModal({ orderId, onClose }) {
   const queryClient = useQueryClient();
   const [config] = useState(() => getStoredConfig());
+  const [inventoryMaterials] = useState(() => {
+    try {
+      const saved = localStorage.getItem('inventory_materials');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [inventoryFilaments] = useState(() => {
     try {
       const saved = localStorage.getItem('inventory_filaments');
@@ -530,6 +562,30 @@ export default function OrderDetailsModal({ orderId, onClose }) {
     }));
   };
 
+  const updateMaterialInventory = (materialId, value) => {
+    const selected = inventoryMaterials.find((material) => String(material.id) === value);
+    setEditorState((current) => ({
+      ...current,
+      materials: current.materials.map((material) =>
+        material.id === materialId
+          ? {
+              ...material,
+              inventoryId: selected ? selected.id : '',
+              name: selected ? selected.name : material.name,
+              unit: selected ? (selected.unit || '') : material.unit,
+              costPerUnit: selected
+                ? Number(
+                    selected.costPerUnit ??
+                      (((Number(selected.bulkPrice) || 0) /
+                        Math.max(1, Number(selected.quantity) || 1)) || 0),
+                  )
+                : material.costPerUnit,
+            }
+          : material,
+      ),
+    }));
+  };
+
   const removeMaterial = (materialId) => {
     setEditorState((current) => ({
       ...current,
@@ -593,6 +649,26 @@ export default function OrderDetailsModal({ orderId, onClose }) {
       });
 
       localStorage.setItem('inventory_filaments', JSON.stringify(updatedInventory));
+
+      const savedMaterials = localStorage.getItem('inventory_materials');
+      if (savedMaterials) {
+        const previousMaterialUsage = buildMaterialUsageMap(previousEditorState);
+        const nextMaterialUsage = buildMaterialUsageMap(editorState);
+        const materialsInventory = JSON.parse(savedMaterials);
+
+        const updatedMaterials = materialsInventory.map((item) => {
+          const id = String(item.id);
+          const restored = previousMaterialUsage[id] || 0;
+          const deducted = nextMaterialUsage[id] || 0;
+          const nextQuantity = Math.max(
+            0,
+            (parseFloat(item.quantity) || 0) + restored - deducted,
+          );
+          return { ...item, quantity: nextQuantity };
+        });
+
+        localStorage.setItem('inventory_materials', JSON.stringify(updatedMaterials));
+      }
     } catch (error) {
       console.error('Failed to reconcile inventory stock:', error);
     }
@@ -849,15 +925,41 @@ export default function OrderDetailsModal({ orderId, onClose }) {
                     ) : (
                       <div className="space-y-4">
                         {editorState.materials.map((material) => (
-                          <div key={material.id} className="grid grid-cols-1 md:grid-cols-[2fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
+                          <div key={material.id} className="grid grid-cols-1 md:grid-cols-[1.7fr_0.8fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
                             <div>
-                              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Material Name</label>
-                              <input value={material.name} onChange={(e) => updateMaterial(material.id, 'name', e.target.value)} className={fieldClass} />
+                              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Inventory Item</label>
+                              {inventoryMaterials.length > 0 ? (
+                                <select
+                                  value={material.inventoryId ?? ''}
+                                  onChange={(e) => updateMaterialInventory(material.id, e.target.value)}
+                                  className={fieldClass}
+                                >
+                                  <option value="">-- select material/hardware --</option>
+                                  {inventoryMaterials.map((inventoryMaterial) => (
+                                    <option key={inventoryMaterial.id} value={String(inventoryMaterial.id)}>
+                                      {inventoryMaterial.name}
+                                      {inventoryMaterial.category ? ` - ${inventoryMaterial.category}` : ''}
+                                      {inventoryMaterial.unit ? ` (${inventoryMaterial.unit})` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <div className="px-3 py-2 bg-zinc-50 border border-dashed border-zinc-200 rounded-md text-xs text-zinc-400 italic">
+                                  No inventory materials - add them in the Inventory tab
+                                </div>
+                              )}
                             </div>
                             <div>
-                              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Cost</label>
+                              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Qty</label>
                               <div className="relative">
-                                <input type="number" min="0" step="0.01" value={material.cost} onChange={(e) => updateMaterial(material.id, 'cost', e.target.value)} className={`${fieldClass} pr-12 font-medium`} />
+                                <input type="number" min="0" step="1" value={material.quantity} onChange={(e) => updateMaterial(material.id, 'quantity', e.target.value)} className={`${fieldClass} pr-10 font-medium`} />
+                                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">{material.unit || 'pcs'}</span>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Cost / Unit</label>
+                              <div className="relative">
+                                <input type="number" min="0" step="0.01" value={material.costPerUnit} onChange={(e) => updateMaterial(material.id, 'costPerUnit', e.target.value)} className={`${fieldClass} pr-12 font-medium`} />
                                 <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
                               </div>
                             </div>
