@@ -1,6 +1,7 @@
-import { useReducer, useState } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabaseClient';
+import { adjustInventoryStock, fetchInventoryFilaments, fetchInventoryMaterials } from '../lib/inventory';
 import {
   Calculator, Plus, Trash2, Box, Zap, Clock, Coins, Wrench, CheckCircle2, Paintbrush, Shield, User, Layers
 } from 'lucide-react';
@@ -158,18 +159,25 @@ export default function AdvancedPriceChecker({ config }) {
   });
 
   // Read inventory filaments from localStorage (kept in sync with InventoryView)
-  const [inventoryFilaments] = useState(() => {
-    try {
-      const saved = localStorage.getItem('inventory_filaments');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
-  const [inventoryMaterials] = useState(() => {
-    try {
-      const saved = localStorage.getItem('inventory_materials');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
+  const [inventoryFilaments, setInventoryFilaments] = useState([]);
+  const [inventoryMaterials, setInventoryMaterials] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.all([
+      fetchInventoryFilaments().catch(() => []),
+      fetchInventoryMaterials().catch(() => []),
+    ]).then(([filamentsData, materialsData]) => {
+      if (cancelled) return;
+      setInventoryFilaments(filamentsData);
+      setInventoryMaterials(materialsData);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const calcElectricityAndMaterials = () => {
     let totalKWh = 0;
@@ -246,53 +254,25 @@ export default function AdvancedPriceChecker({ config }) {
   };
 
   // Deduct filament weights from inventory localStorage when an order is confirmed
-  const deductInventoryStock = () => {
-    try {
-      const savedFilaments = localStorage.getItem('inventory_filaments');
-      if (savedFilaments) {
-        let inventory = JSON.parse(savedFilaments);
+  const deductInventoryStock = async () => {
+    const filamentDeltaById = {};
+    const materialDeltaById = {};
 
-        // Aggregate total grams used per inventory filament ID across all plates
-        const usageMap = {};
-        state.plates.forEach(plate => {
-          plate.filaments.forEach(f => {
-            if (f.inventoryId) {
-              const key = String(f.inventoryId);
-              usageMap[key] = (usageMap[key] || 0) + (parseFloat(f.weight) || 0);
-            }
-          });
-        });
+    state.plates.forEach((plate) => {
+      plate.filaments.forEach((filament) => {
+        if (!filament.inventoryId) return;
+        const key = String(filament.inventoryId);
+        filamentDeltaById[key] = (filamentDeltaById[key] || 0) - (parseFloat(filament.weight) || 0);
+      });
+    });
 
-        inventory = inventory.map(inv => {
-          const used = usageMap[String(inv.id)] || 0;
-          return used > 0 ? { ...inv, weightGrams: Math.max(0, inv.weightGrams - used) } : inv;
-        });
+    state.materials.forEach((material) => {
+      if (!material.inventoryId) return;
+      const key = String(material.inventoryId);
+      materialDeltaById[key] = (materialDeltaById[key] || 0) - (parseFloat(material.quantity) || 0);
+    });
 
-        localStorage.setItem('inventory_filaments', JSON.stringify(inventory));
-      }
-
-      const savedMaterials = localStorage.getItem('inventory_materials');
-      if (savedMaterials) {
-        let materialsInventory = JSON.parse(savedMaterials);
-        const usageMap = {};
-
-        state.materials.forEach(mat => {
-          if (mat.inventoryId) {
-            const key = String(mat.inventoryId);
-            usageMap[key] = (usageMap[key] || 0) + (parseFloat(mat.quantity) || 0);
-          }
-        });
-
-        materialsInventory = materialsInventory.map(mat => {
-          const used = usageMap[String(mat.id)] || 0;
-          return used > 0 ? { ...mat, quantity: Math.max(0, (parseFloat(mat.quantity) || 0) - used) } : mat;
-        });
-
-        localStorage.setItem('inventory_materials', JSON.stringify(materialsInventory));
-      }
-    } catch (err) {
-      console.error('Failed to deduct inventory stock:', err);
-    }
+    await adjustInventoryStock({ filamentDeltaById, materialDeltaById });
   };
 
   const confirmOrderMutation = useMutation({
@@ -340,16 +320,15 @@ export default function AdvancedPriceChecker({ config }) {
       if (rpcErr) throw rpcErr;
       return orderId;
     },
-    onSuccess: () => {
-      deductInventoryStock();
+    onSuccess: async () => {
+      await deductInventoryStock();
       alert('Order successfully saved to Supabase (Optimized)!');
       queryClient.invalidateQueries({ queryKey: ['dashboard-data'] });
       setShowModal(false);
     },
     onError: (e) => {
       console.error('Database Error:', e.message);
-      deductInventoryStock();
-      alert('Order processed locally! (Set ENV variables and apply SQL migration to write to Supabase)');
+      alert('Failed to save order to Supabase.');
       setShowModal(false);
     }
   });

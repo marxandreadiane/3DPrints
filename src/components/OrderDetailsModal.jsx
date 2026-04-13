@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabaseClient';
+import { adjustInventoryStock, fetchInventoryFilaments, fetchInventoryMaterials } from '../lib/inventory';
 import {
   X,
   User,
@@ -328,22 +329,8 @@ function buildMaterialUsageMap(editorState) {
 export default function OrderDetailsModal({ orderId, onClose }) {
   const queryClient = useQueryClient();
   const [config] = useState(() => getStoredConfig());
-  const [inventoryMaterials] = useState(() => {
-    try {
-      const saved = localStorage.getItem('inventory_materials');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [inventoryFilaments] = useState(() => {
-    try {
-      const saved = localStorage.getItem('inventory_filaments');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [inventoryMaterials, setInventoryMaterials] = useState([]);
+  const [inventoryFilaments, setInventoryFilaments] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
   const [editorState, setEditorState] = useState(null);
 
@@ -365,6 +352,23 @@ export default function OrderDetailsModal({ orderId, onClose }) {
     },
     enabled: !!orderId,
   });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.all([
+      fetchInventoryMaterials().catch(() => []),
+      fetchInventoryFilaments().catch(() => []),
+    ]).then(([materialsData, filamentsData]) => {
+      if (cancelled) return;
+      setInventoryMaterials(materialsData);
+      setInventoryFilaments(filamentsData);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const item = data?.items?.[0] || {};
   const client = data?.clients || {};
@@ -628,47 +632,28 @@ export default function OrderDetailsModal({ orderId, onClose }) {
     updateMutation.mutate();
   };
 
-  const reconcileInventoryStock = () => {
+  const reconcileInventoryStock = async () => {
     try {
-      const saved = localStorage.getItem('inventory_filaments');
-      if (!saved || !editorState) return;
-
       const previousEditorState = data?.financial_breakdown?.editorState;
-      if (!previousEditorState) return;
+      if (!previousEditorState || !editorState) return;
 
       const previousUsage = buildInventoryUsageMap(previousEditorState);
       const nextUsage = buildInventoryUsageMap(editorState);
-      const inventory = JSON.parse(saved);
+      const previousMaterialUsage = buildMaterialUsageMap(previousEditorState);
+      const nextMaterialUsage = buildMaterialUsageMap(editorState);
 
-      const updatedInventory = inventory.map((item) => {
-        const id = String(item.id);
-        const restored = previousUsage[id] || 0;
-        const deducted = nextUsage[id] || 0;
-        const nextWeight = Math.max(0, (parseFloat(item.weightGrams) || 0) + restored - deducted);
-        return { ...item, weightGrams: nextWeight };
+      const filamentDeltaById = {};
+      const materialDeltaById = {};
+
+      new Set([...Object.keys(previousUsage), ...Object.keys(nextUsage)]).forEach((id) => {
+        filamentDeltaById[id] = (previousUsage[id] || 0) - (nextUsage[id] || 0);
       });
 
-      localStorage.setItem('inventory_filaments', JSON.stringify(updatedInventory));
+      new Set([...Object.keys(previousMaterialUsage), ...Object.keys(nextMaterialUsage)]).forEach((id) => {
+        materialDeltaById[id] = (previousMaterialUsage[id] || 0) - (nextMaterialUsage[id] || 0);
+      });
 
-      const savedMaterials = localStorage.getItem('inventory_materials');
-      if (savedMaterials) {
-        const previousMaterialUsage = buildMaterialUsageMap(previousEditorState);
-        const nextMaterialUsage = buildMaterialUsageMap(editorState);
-        const materialsInventory = JSON.parse(savedMaterials);
-
-        const updatedMaterials = materialsInventory.map((item) => {
-          const id = String(item.id);
-          const restored = previousMaterialUsage[id] || 0;
-          const deducted = nextMaterialUsage[id] || 0;
-          const nextQuantity = Math.max(
-            0,
-            (parseFloat(item.quantity) || 0) + restored - deducted,
-          );
-          return { ...item, quantity: nextQuantity };
-        });
-
-        localStorage.setItem('inventory_materials', JSON.stringify(updatedMaterials));
-      }
+      await adjustInventoryStock({ filamentDeltaById, materialDeltaById });
     } catch (error) {
       console.error('Failed to reconcile inventory stock:', error);
     }

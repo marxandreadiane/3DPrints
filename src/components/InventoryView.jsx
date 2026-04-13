@@ -1,6 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, Pencil, Check, X, Package, Layers, AlertTriangle, ShoppingCart, Receipt, RotateCcw } from 'lucide-react';
 import { supabase } from '../supabaseClient';
+import {
+  INVENTORY_FILAMENTS_TABLE,
+  INVENTORY_MATERIALS_TABLE,
+  fetchInventoryFilaments,
+  fetchInventoryMaterials,
+  mapFilamentStateToRow,
+  mapMaterialStateToRow,
+  syncInventoryCache,
+} from '../lib/inventory';
 
 const FILAMENT_TYPES = ['PLA Basic', 'PLA Glow', 'PETG', 'ABS', 'TPU'];
 const FILAMENT_BRANDS = ['Bambu Lab', 'eSun'];
@@ -48,7 +57,7 @@ function mapHistoryEntryToRow(entry) {
   const isFilamentEntry = typeof entry.gramsAdded === 'number';
 
   return {
-    id: entry.id,
+    ...(entry.id != null ? { id: entry.id } : {}),
     date: entry.date,
     item_type: isFilamentEntry ? 'filament' : (entry.itemType || 'material'),
     item_id: entry.itemId ?? null,
@@ -96,23 +105,6 @@ function mapHistoryRowToEntry(row) {
   };
 }
 
-function useLocalStorage(key, defaultValue) {
-  const [value, setValue] = useState(() => {
-    try {
-      const saved = localStorage.getItem(key);
-      return saved ? JSON.parse(saved) : defaultValue;
-    } catch {
-      return defaultValue;
-    }
-  });
-
-  useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(value));
-  }, [key, value]);
-
-  return [value, setValue];
-}
-
 const LOW_STOCK_THRESHOLD_GRAMS = 200;
 const LOW_STOCK_THRESHOLD_QTY = 5;
 
@@ -152,7 +144,6 @@ function FilamentRow({ filament, onUpdate, onDelete, onRestock }) {
     };
     onUpdate(updatedFilament);
     onRestock?.({
-      id: Date.now(),
       date: new Date().toISOString(),
       filamentId: filament.id,
       filamentLabel: `${filament.type || filament.name}${filament.color ? ' - ' + filament.color : ''}${filament.brand ? ' (' + filament.brand + ')' : ''}`,
@@ -377,7 +368,6 @@ function MaterialRow({ material, onUpdate, onDelete, onRestock }) {
       costPerUnit: roundedCostPerUnit,
     });
     onRestock?.({
-      id: Date.now(),
       date: new Date().toISOString(),
       itemType: 'material',
       itemId: normalizedMaterial.id,
@@ -497,11 +487,109 @@ function MaterialRow({ material, onUpdate, onDelete, onRestock }) {
   );
 }
 export default function InventoryView() {
-  const [filaments, setFilaments] = useLocalStorage('inventory_filaments', DEFAULT_FILAMENTS);
-  const [materials, setMaterials] = useLocalStorage('inventory_materials', DEFAULT_MATERIALS.map(normalizeMaterial));
+  const [filaments, setFilaments] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [inventoryLoading, setInventoryLoading] = useState(true);
   const [purchaseHistory, setPurchaseHistory] = useState([]);
   const [purchaseHistoryLoading, setPurchaseHistoryLoading] = useState(true);
   const [activeSection, setActiveSection] = useState('filaments');
+
+  useEffect(() => {
+    syncInventoryCache({ filaments, materials });
+  }, [filaments, materials]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadInventory = async () => {
+      setInventoryLoading(true);
+
+      try {
+        const [dbFilaments, dbMaterials] = await Promise.all([
+          fetchInventoryFilaments(),
+          fetchInventoryMaterials(),
+        ]);
+
+        if (cancelled) return;
+
+        const localFilaments = (() => {
+          try {
+            const raw = localStorage.getItem('inventory_filaments');
+            return raw ? JSON.parse(raw) : [];
+          } catch {
+            return [];
+          }
+        })();
+
+        const localMaterials = (() => {
+          try {
+            const raw = localStorage.getItem('inventory_materials');
+            return raw ? JSON.parse(raw).map(normalizeMaterial) : [];
+          } catch {
+            return [];
+          }
+        })();
+
+        let nextFilaments = dbFilaments;
+        let nextMaterials = dbMaterials.map(normalizeMaterial);
+
+        if (dbFilaments.length === 0 && localFilaments.length > 0) {
+          const { data, error } = await supabase
+            .from(INVENTORY_FILAMENTS_TABLE)
+            .insert(localFilaments.map(mapFilamentStateToRow))
+            .select('*');
+          if (!error && !cancelled) {
+            nextFilaments = (data || []).map((row) => ({
+              id: row.id,
+              type: row.type,
+              brand: row.brand,
+              color: row.color,
+              weightGrams: Number(row.weight_grams),
+              costPerKg: Number(row.cost_per_kg),
+              notes: row.notes,
+            }));
+          }
+        }
+
+        if (dbMaterials.length === 0 && localMaterials.length > 0) {
+          const { data, error } = await supabase
+            .from(INVENTORY_MATERIALS_TABLE)
+            .insert(localMaterials.map(mapMaterialStateToRow))
+            .select('*');
+          if (!error && !cancelled) {
+            nextMaterials = (data || []).map((row) =>
+              normalizeMaterial({
+                id: row.id,
+                name: row.name,
+                category: row.category,
+                quantity: Number(row.quantity),
+                unit: row.unit,
+                bulkPrice: Number(row.bulk_price),
+                costPerUnit: Number(row.cost_per_unit),
+                notes: row.notes,
+              }),
+            );
+          }
+        }
+
+        if (cancelled) return;
+        setFilaments(nextFilaments);
+        setMaterials(nextMaterials);
+      } catch (error) {
+        console.error('Failed to load inventory from Supabase:', error);
+        setFilaments(DEFAULT_FILAMENTS);
+        setMaterials(DEFAULT_MATERIALS.map(normalizeMaterial));
+      } finally {
+        if (!cancelled) setInventoryLoading(false);
+      }
+    };
+
+    loadInventory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -654,16 +742,43 @@ export default function InventoryView() {
     const isFilamentEntry = typeof entry.gramsAdded === 'number';
 
     if (isFilamentEntry) {
+      const rollback = {
+        weight_grams: entry.prevWeightGrams,
+        cost_per_kg: entry.prevCostPerKg,
+        updated_at: new Date().toISOString(),
+      };
+      const { error: rollbackError } = await supabase
+        .from(INVENTORY_FILAMENTS_TABLE)
+        .update(rollback)
+        .eq('id', entry.filamentId);
+
+      if (rollbackError) {
+        console.error('Failed to roll back filament inventory in Supabase:', rollbackError);
+        return;
+      }
+
       setFilaments(prev => prev.map(f => (
         f.id === entry.filamentId
-          ? {
-            ...f,
-            weightGrams: entry.prevWeightGrams,
-            costPerKg: entry.prevCostPerKg,
-          }
+          ? { ...f, weightGrams: entry.prevWeightGrams, costPerKg: entry.prevCostPerKg }
           : f
       )));
     } else {
+      const rollback = {
+        quantity: entry.prevQuantity,
+        bulk_price: roundCurrency((entry.prevCostPerUnit || 0) * (entry.prevQuantity || 0)),
+        cost_per_unit: entry.prevCostPerUnit,
+        updated_at: new Date().toISOString(),
+      };
+      const { error: rollbackError } = await supabase
+        .from(INVENTORY_MATERIALS_TABLE)
+        .update(rollback)
+        .eq('id', entry.itemId);
+
+      if (rollbackError) {
+        console.error('Failed to roll back material inventory in Supabase:', rollbackError);
+        return;
+      }
+
       setMaterials(prev => prev.map(m => (
         m.id === entry.itemId
           ? normalizeMaterial({
@@ -692,50 +807,127 @@ export default function InventoryView() {
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Filament CRUD ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   const addFilament = () => {
-    setFilaments(prev => [...prev, {
-      id: Date.now(),
-      type: FILAMENT_TYPES[0],
-      brand: FILAMENT_BRANDS[0],
-      color: '',
-
-      weightGrams: 0,
-      costPerKg: 0,
-      notes: ''
-    }]);
+    supabase
+      .from(INVENTORY_FILAMENTS_TABLE)
+      .insert(mapFilamentStateToRow({
+        type: FILAMENT_TYPES[0],
+        brand: FILAMENT_BRANDS[0],
+        color: '',
+        weightGrams: 0,
+        costPerKg: 0,
+        notes: '',
+      }))
+      .select('*')
+      .single()
+      .then(({ data, error }) => {
+        if (error) {
+          console.error('Failed to add filament to Supabase:', error);
+          return;
+        }
+        setFilaments(prev => [...prev, {
+          id: data.id,
+          type: data.type,
+          brand: data.brand,
+          color: data.color,
+          weightGrams: Number(data.weight_grams),
+          costPerKg: Number(data.cost_per_kg),
+          notes: data.notes,
+        }]);
+      });
   };
 
   const updateFilament = (updated) => {
-    setFilaments(prev => prev.map(f => f.id === updated.id ? updated : f));
+    supabase
+      .from(INVENTORY_FILAMENTS_TABLE)
+      .update(mapFilamentStateToRow(updated))
+      .eq('id', updated.id)
+      .then(({ error }) => {
+        if (error) {
+          console.error('Failed to update filament in Supabase:', error);
+          return;
+        }
+        setFilaments(prev => prev.map(f => f.id === updated.id ? updated : f));
+      });
   };
 
   const deleteFilament = (id) => {
     if (window.confirm('Remove this filament from inventory?')) {
-      setFilaments(prev => prev.filter(f => f.id !== id));
+      supabase
+        .from(INVENTORY_FILAMENTS_TABLE)
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) {
+            console.error('Failed to delete filament from Supabase:', error);
+            return;
+          }
+          setFilaments(prev => prev.filter(f => f.id !== id));
+        });
     }
   };
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Material CRUD ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   const addMaterial = () => {
-    setMaterials(prev => [...prev, {
-      id: Date.now(),
-      name: 'New Item',
-      category: 'Hardware',
-      quantity: 0,
-      unit: 'pcs',
-      bulkPrice: 0,
-      costPerUnit: 0,
-      notes: ''
-    }]);
+    supabase
+      .from(INVENTORY_MATERIALS_TABLE)
+      .insert(mapMaterialStateToRow({
+        name: 'New Item',
+        category: 'Hardware',
+        quantity: 0,
+        unit: 'pcs',
+        bulkPrice: 0,
+        costPerUnit: 0,
+        notes: '',
+      }))
+      .select('*')
+      .single()
+      .then(({ data, error }) => {
+        if (error) {
+          console.error('Failed to add material to Supabase:', error);
+          return;
+        }
+        setMaterials(prev => [...prev, normalizeMaterial({
+          id: data.id,
+          name: data.name,
+          category: data.category,
+          quantity: Number(data.quantity),
+          unit: data.unit,
+          bulkPrice: Number(data.bulk_price),
+          costPerUnit: Number(data.cost_per_unit),
+          notes: data.notes,
+        })]);
+      });
   };
 
   const updateMaterial = (updated) => {
-    setMaterials(prev => prev.map(m => m.id === updated.id ? normalizeMaterial(updated) : m));
+    const normalized = normalizeMaterial(updated);
+    supabase
+      .from(INVENTORY_MATERIALS_TABLE)
+      .update(mapMaterialStateToRow(normalized))
+      .eq('id', normalized.id)
+      .then(({ error }) => {
+        if (error) {
+          console.error('Failed to update material in Supabase:', error);
+          return;
+        }
+        setMaterials(prev => prev.map(m => m.id === normalized.id ? normalized : m));
+      });
   };
 
   const deleteMaterial = (id) => {
     if (window.confirm('Remove this item from inventory?')) {
-      setMaterials(prev => prev.filter(m => m.id !== id));
+      supabase
+        .from(INVENTORY_MATERIALS_TABLE)
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) {
+            console.error('Failed to delete material from Supabase:', error);
+            return;
+          }
+          setMaterials(prev => prev.filter(m => m.id !== id));
+        });
     }
   };
 
@@ -831,7 +1023,11 @@ export default function InventoryView() {
             </button>
           </div>
 
-          {filaments.length === 0 ? (
+          {inventoryLoading ? (
+            <div className="p-8 text-center text-zinc-400 text-sm border-b border-zinc-100">
+              Loading inventory...
+            </div>
+          ) : filaments.length === 0 ? (
             <div className="p-8 text-center text-zinc-400 text-sm border-b border-zinc-100">
               No filaments in inventory. Add one above.
             </div>
@@ -887,7 +1083,11 @@ export default function InventoryView() {
             </button>
           </div>
 
-          {materials.length === 0 ? (
+          {inventoryLoading ? (
+            <div className="p-8 text-center text-zinc-400 text-sm border-b border-zinc-100">
+              Loading inventory...
+            </div>
+          ) : materials.length === 0 ? (
             <div className="p-8 text-center text-zinc-400 text-sm border-b border-zinc-100">
               No materials in inventory. Add one above.
             </div>
@@ -974,7 +1174,6 @@ export default function InventoryView() {
                     const unitLabel = isFilamentEntry ? 'g' : (h.unitLabel || 'units');
                     const batchRate = quantityAdded > 0 ? (h.purchaseCost / (quantityAdded / (isFilamentEntry ? 1000 : 1))) : 0;
                     const batchCostPerKg = batchRate;
-                    const newAverage = isFilamentEntry ? h.newCostPerKg : h.newCostPerUnit;
                     const stockAfter = isFilamentEntry ? h.newWeightGrams : h.newQuantity;
                     const averageUnitLabel = isFilamentEntry ? 'kg' : unitLabel;
                     const canUndo = canUndoHistoryEntry(h);
