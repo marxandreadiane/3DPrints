@@ -4,35 +4,148 @@ import MetricsView from './MetricsView';
 import ConfigurationsView from './ConfigurationsView';
 import CompletedOrdersView from './CompletedOrdersView';
 import InventoryView from './InventoryView';
+import { supabase } from '../supabaseClient';
 import { ChevronRight, Search, Menu, Settings, Box, Factory, LogOut, Archive, Package } from 'lucide-react';
+
+const DEFAULT_SYSTEM_CONFIG = {
+  baseCostRate: 14.16,
+  printerKwhPerHour: 0.2,
+  powerSurgeKwh: 1.3,
+  hourlyLaborRate: 250,
+  filamentChangeCost: 0.1,
+  sandingCost: 500,
+  paintingCost: 800,
+  assemblyCost: 350,
+  failureRatePercent: 10,
+  markupPercent: 30,
+  wearTearCostPer15Min: 2.5,
+};
+
+function mapConfigRowToState(row) {
+  return {
+    baseCostRate: Number(row.base_cost_rate),
+    printerKwhPerHour: Number(row.printer_kwh_per_hour),
+    powerSurgeKwh: Number(row.power_surge_kwh),
+    hourlyLaborRate: Number(row.hourly_labor_rate),
+    filamentChangeCost: Number(row.filament_change_cost),
+    sandingCost: Number(row.sanding_cost),
+    paintingCost: Number(row.painting_cost),
+    assemblyCost: Number(row.assembly_cost),
+    failureRatePercent: Number(row.failure_rate_percent),
+    markupPercent: Number(row.markup_percent),
+    wearTearCostPer15Min: Number(row.wear_tear_cost_per_15_min),
+  };
+}
+
+function mapConfigStateToRow(config) {
+  return {
+    id: 1,
+    base_cost_rate: config.baseCostRate,
+    printer_kwh_per_hour: config.printerKwhPerHour,
+    power_surge_kwh: config.powerSurgeKwh,
+    hourly_labor_rate: config.hourlyLaborRate,
+    filament_change_cost: config.filamentChangeCost,
+    sanding_cost: config.sandingCost,
+    painting_cost: config.paintingCost,
+    assembly_cost: config.assemblyCost,
+    failure_rate_percent: config.failureRatePercent,
+    markup_percent: config.markupPercent,
+    wear_tear_cost_per_15_min: config.wearTearCostPer15Min,
+    updated_at: new Date().toISOString(),
+  };
+}
 
 export default function ClientDashboard() {
   const [selectedClient, setSelectedClient] = useState('John Doe Studios');
   const [selectedOrder, setSelectedOrder] = useState('ORD-2024-089');
   const [activeTab, setActiveTab] = useState('Calculator');
+  const [configLoading, setConfigLoading] = useState(true);
+  const [configSaving, setConfigSaving] = useState(false);
   
   const [systemConfig, setSystemConfig] = useState(() => {
     const saved = localStorage.getItem('nexusPrintConfig');
-    if (saved) return JSON.parse(saved);
-    return {
-      baseCostRate: 14.16,
-      printerKwhPerHour: 0.2,
-      powerSurgeKwh: 1.3,
-      hourlyLaborRate: 250,
-      filamentChangeCost: 0.1,
-      sandingCost: 500,
-      paintingCost: 800,
-      assemblyCost: 350,
-      failureRatePercent: 10,
-      markupPercent: 30,
-      wearTearCostPer15Min: 2.5,
-    };
+    if (saved) return { ...DEFAULT_SYSTEM_CONFIG, ...JSON.parse(saved) };
+    return DEFAULT_SYSTEM_CONFIG;
   });
 
-  // Save to localStorage whenever config is updated
   useEffect(() => {
     localStorage.setItem('nexusPrintConfig', JSON.stringify(systemConfig));
   }, [systemConfig]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadConfig = async () => {
+      setConfigLoading(true);
+
+      const { data, error } = await supabase
+        .from('system_configurations')
+        .select('*')
+        .eq('id', 1)
+        .maybeSingle();
+
+      if (cancelled) return;
+
+      if (error) {
+        console.error('Failed to load system configuration from Supabase:', error);
+        setConfigLoading(false);
+        return;
+      }
+
+      if (data) {
+        setSystemConfig(mapConfigRowToState(data));
+        setConfigLoading(false);
+        return;
+      }
+
+      const fallbackConfig = (() => {
+        const saved = localStorage.getItem('nexusPrintConfig');
+        return saved ? { ...DEFAULT_SYSTEM_CONFIG, ...JSON.parse(saved) } : DEFAULT_SYSTEM_CONFIG;
+      })();
+
+      const { data: insertedData, error: upsertError } = await supabase
+        .from('system_configurations')
+        .upsert(mapConfigStateToRow(fallbackConfig), { onConflict: 'id' })
+        .select()
+        .single();
+
+      if (cancelled) return;
+
+      if (upsertError) {
+        console.error('Failed to initialize system configuration in Supabase:', upsertError);
+        setSystemConfig(fallbackConfig);
+      } else {
+        setSystemConfig(mapConfigRowToState(insertedData));
+      }
+
+      setConfigLoading(false);
+    };
+
+    loadConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const saveSystemConfig = async (nextConfig) => {
+    setConfigSaving(true);
+
+    const { data, error } = await supabase
+      .from('system_configurations')
+      .upsert(mapConfigStateToRow(nextConfig), { onConflict: 'id' })
+      .select()
+      .single();
+
+    setConfigSaving(false);
+
+    if (error) {
+      console.error('Failed to save system configuration to Supabase:', error);
+      throw error;
+    }
+
+    setSystemConfig(mapConfigRowToState(data));
+  };
 
   const clients = ['John Doe Studios', 'Acme Props', 'NerdGear Inc'];
   const orders = ['ORD-2024-089', 'ORD-2024-092', 'New Order'];
@@ -171,7 +284,14 @@ export default function ClientDashboard() {
 
             {activeTab === 'Inventory' && <InventoryView />}
             
-            {activeTab === 'Configurations' && <ConfigurationsView config={systemConfig} setConfig={setSystemConfig} />}
+            {activeTab === 'Configurations' && (
+              <ConfigurationsView
+                config={systemConfig}
+                onSave={saveSystemConfig}
+                isLoading={configLoading}
+                isSaving={configSaving}
+              />
+            )}
           </div>
         </div>
 
