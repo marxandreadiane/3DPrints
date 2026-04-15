@@ -1,5 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Plus, Trash2, Pencil, Check, X, Package, Layers, AlertTriangle } from 'lucide-react';
+import { Plus, Trash2, Pencil, Check, X, Package, Layers, AlertTriangle, ShoppingCart, Receipt, RotateCcw } from 'lucide-react';
+import { supabase } from '../supabaseClient';
+import {
+  INVENTORY_FILAMENTS_TABLE,
+  INVENTORY_MATERIALS_TABLE,
+  fetchInventoryFilaments,
+  fetchInventoryMaterials,
+  mapFilamentStateToRow,
+  mapMaterialStateToRow,
+  syncInventoryCache,
+} from '../lib/inventory';
 
 const FILAMENT_TYPES = ['PLA Basic', 'PLA Glow', 'PETG', 'ABS', 'TPU'];
 const FILAMENT_BRANDS = ['Bambu Lab', 'eSun'];
@@ -10,34 +20,102 @@ const DEFAULT_FILAMENTS = [
 ];
 
 const DEFAULT_MATERIALS = [
-  { id: 1, name: 'M3 Clicker Insert', category: 'Hardware', quantity: 50, unit: 'pcs', costPerUnit: 5, notes: '' },
+  { id: 1, name: 'M3 Clicker Insert', category: 'Hardware', quantity: 50, unit: 'pcs', bulkPrice: 250, notes: '' },
 ];
 
-function useLocalStorage(key, defaultValue) {
-  const [value, setValue] = useState(() => {
-    try {
-      const saved = localStorage.getItem(key);
-      return saved ? JSON.parse(saved) : defaultValue;
-    } catch {
-      return defaultValue;
-    }
-  });
+const roundCurrency = (value) => Math.round((value || 0) * 100) / 100;
 
-  useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(value));
-  }, [key, value]);
+function getMaterialBulkPrice(material) {
+  if (material?.bulkPrice != null && Number.isFinite(Number(material.bulkPrice))) {
+    return Number(material.bulkPrice);
+  }
+  const quantity = Number(material?.quantity) || 0;
+  const costPerUnit = Number(material?.costPerUnit) || 0;
+  return quantity * costPerUnit;
+}
 
-  return [value, setValue];
+function getMaterialUnitPrice(material) {
+  const quantity = Number(material?.quantity) || 0;
+  if (quantity <= 0) return 0;
+  return getMaterialBulkPrice(material) / quantity;
+}
+
+function normalizeMaterial(material) {
+  const quantity = Number(material?.quantity) || 0;
+  const bulkPrice = roundCurrency(getMaterialBulkPrice(material));
+  return {
+    ...material,
+    quantity,
+    bulkPrice,
+    costPerUnit: quantity > 0 ? roundCurrency(bulkPrice / quantity) : 0,
+  };
+}
+
+const PURCHASE_HISTORY_TABLE = 'inventory_purchase_history';
+
+function mapHistoryEntryToRow(entry) {
+  const isFilamentEntry = typeof entry.gramsAdded === 'number';
+
+  return {
+    ...(entry.id != null ? { id: entry.id } : {}),
+    date: entry.date,
+    item_type: isFilamentEntry ? 'filament' : (entry.itemType || 'material'),
+    item_id: entry.itemId ?? null,
+    item_label: entry.itemLabel || entry.filamentLabel || 'Unknown item',
+    item_category: entry.itemCategory ?? null,
+    unit_label: entry.unitLabel ?? null,
+    quantity_added: isFilamentEntry ? (entry.gramsAdded ?? 0) : (entry.quantityAdded ?? 0),
+    purchase_cost: entry.purchaseCost ?? 0,
+    prev_cost_per_unit: entry.prevCostPerUnit ?? null,
+    new_cost_per_unit: entry.newCostPerUnit ?? null,
+    prev_quantity: entry.prevQuantity ?? null,
+    new_quantity: entry.newQuantity ?? null,
+    filament_id: entry.filamentId ?? null,
+    filament_label: entry.filamentLabel ?? null,
+    grams_added: entry.gramsAdded ?? null,
+    prev_cost_per_kg: entry.prevCostPerKg ?? null,
+    new_cost_per_kg: entry.newCostPerKg ?? null,
+    prev_weight_grams: entry.prevWeightGrams ?? null,
+    new_weight_grams: entry.newWeightGrams ?? null,
+  };
+}
+
+function mapHistoryRowToEntry(row) {
+  return {
+    id: row.id,
+    date: row.date,
+    itemType: row.item_type,
+    itemId: row.item_id,
+    itemLabel: row.item_label,
+    itemCategory: row.item_category,
+    unitLabel: row.unit_label,
+    quantityAdded: row.quantity_added,
+    purchaseCost: row.purchase_cost,
+    prevCostPerUnit: row.prev_cost_per_unit,
+    newCostPerUnit: row.new_cost_per_unit,
+    prevQuantity: row.prev_quantity,
+    newQuantity: row.new_quantity,
+    filamentId: row.filament_id,
+    filamentLabel: row.filament_label,
+    gramsAdded: row.grams_added,
+    prevCostPerKg: row.prev_cost_per_kg,
+    newCostPerKg: row.new_cost_per_kg,
+    prevWeightGrams: row.prev_weight_grams,
+    newWeightGrams: row.new_weight_grams,
+  };
 }
 
 const LOW_STOCK_THRESHOLD_GRAMS = 200;
 const LOW_STOCK_THRESHOLD_QTY = 5;
 
-// ─── Inline editable row ───────────────────────────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Inline editable row ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
-function FilamentRow({ filament, onUpdate, onDelete }) {
+function FilamentRow({ filament, onUpdate, onDelete, onRestock }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(filament);
+  const [restocking, setRestocking] = useState(false);
+  const [restockGrams, setRestockGrams] = useState('');
+  const [restockCost, setRestockCost] = useState('');
 
   const handleSave = () => {
     onUpdate(draft);
@@ -47,6 +125,38 @@ function FilamentRow({ filament, onUpdate, onDelete }) {
   const handleCancel = () => {
     setDraft(filament);
     setEditing(false);
+  };
+
+  // Weighted average cost calculation
+  const restockGramsNum = parseFloat(restockGrams) || 0;
+  const restockCostNum = parseFloat(restockCost) || 0;
+  const currentValuePHP = (filament.weightGrams / 1000) * filament.costPerKg;
+  const newTotalGrams = filament.weightGrams + restockGramsNum;
+  const newTotalValuePHP = currentValuePHP + restockCostNum;
+  const newAvgCostPerKg = newTotalGrams > 0 ? (newTotalValuePHP / (newTotalGrams / 1000)) : filament.costPerKg;
+
+  const handleRestockConfirm = () => {
+    if (restockGramsNum <= 0) return;
+    const updatedFilament = {
+      ...filament,
+      weightGrams: newTotalGrams,
+      costPerKg: Math.round(newAvgCostPerKg * 100) / 100,
+    };
+    onUpdate(updatedFilament);
+    onRestock?.({
+      date: new Date().toISOString(),
+      filamentId: filament.id,
+      filamentLabel: `${filament.type || filament.name}${filament.color ? ' - ' + filament.color : ''}${filament.brand ? ' (' + filament.brand + ')' : ''}`,
+      gramsAdded: restockGramsNum,
+      purchaseCost: restockCostNum,
+      prevCostPerKg: filament.costPerKg,
+      newCostPerKg: Math.round(newAvgCostPerKg * 100) / 100,
+      prevWeightGrams: filament.weightGrams,
+      newWeightGrams: newTotalGrams,
+    });
+    setRestockGrams('');
+    setRestockCost('');
+    setRestocking(false);
   };
 
   const isLow = filament.weightGrams <= LOW_STOCK_THRESHOLD_GRAMS;
@@ -69,7 +179,7 @@ function FilamentRow({ filament, onUpdate, onDelete }) {
             value={draft.brand}
             onChange={e => setDraft(d => ({ ...d, brand: e.target.value }))}
           >
-            <option value="">— select —</option>
+            <option value="">- select -</option>
             {FILAMENT_BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
           </select>
         </td>
@@ -122,98 +232,184 @@ function FilamentRow({ filament, onUpdate, onDelete }) {
   }
 
   return (
-    <tr className={`border-b border-zinc-100 hover:bg-zinc-50/70 transition-colors ${isLow ? 'bg-amber-50/40' : 'bg-white'}`}>
-      <td className="px-4 py-3 text-sm font-semibold text-zinc-800 flex items-center gap-2">
-        {isLow && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" title="Low stock" />}
-        {filament.type || filament.name || '—'}
-      </td>
-      <td className="px-4 py-3 text-sm text-zinc-500">{filament.brand || '—'}</td>
-      <td className="px-4 py-3 text-sm text-zinc-500">{filament.color}</td>
-      <td className="px-4 py-3">
-        <span className={`text-sm font-bold ${isLow ? 'text-amber-600' : 'text-zinc-800'}`}>
-          {filament.weightGrams.toLocaleString()}g
-        </span>
-      </td>
-      <td className="px-4 py-3 text-sm text-zinc-600">PHP {filament.costPerKg.toLocaleString()}/kg</td>
-      <td className="px-4 py-3 text-xs text-zinc-400 max-w-[140px] truncate">{filament.notes || '—'}</td>
-      <td className="px-4 py-3">
-        <div className="flex gap-1">
-          <button onClick={() => setEditing(true)} className="p-1.5 text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 rounded transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
-          <button onClick={() => onDelete(filament.id)} className="p-1.5 text-zinc-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr className={`border-b border-zinc-100 hover:bg-zinc-50/70 transition-colors ${isLow ? 'bg-amber-50/40' : 'bg-white'}`}>
+        <td className="px-4 py-3 text-sm font-semibold text-zinc-800 flex items-center gap-2">
+          {isLow && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" title="Low stock" />}
+          {filament.type || filament.name || '-'}
+        </td>
+        <td className="px-4 py-3 text-sm text-zinc-500">{filament.brand || '-'}</td>
+        <td className="px-4 py-3 text-sm text-zinc-500">{filament.color}</td>
+        <td className="px-4 py-3">
+          <span className={`text-sm font-bold ${isLow ? 'text-amber-600' : 'text-zinc-800'}`}>
+            {filament.weightGrams.toLocaleString()}g
+          </span>
+        </td>
+        <td className="px-4 py-3 text-sm text-zinc-600">PHP {filament.costPerKg.toLocaleString()}/kg</td>
+        <td className="px-4 py-3 text-xs text-zinc-400 max-w-[140px] truncate">{filament.notes || '-'}</td>
+        <td className="px-4 py-3">
+          <div className="flex gap-1">
+            <button onClick={() => { setEditing(true); setRestocking(false); }} className="p-1.5 text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 rounded transition-colors" title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+            <button
+              onClick={() => { setRestocking(r => !r); setEditing(false); }}
+              className={`p-1.5 rounded transition-colors ${restocking ? 'text-emerald-600 bg-emerald-50' : 'text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50'}`}
+              title="Restock"
+            >
+              <ShoppingCart className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={() => onDelete(filament.id)} className="p-1.5 text-zinc-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+          </div>
+        </td>
+      </tr>
+
+      {/* Restock inline panel */}
+      {restocking && (
+        <tr className="bg-emerald-50/60 border-b border-emerald-100">
+          <td colSpan={7} className="px-4 py-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="text-xs font-bold uppercase tracking-widest text-emerald-700 flex items-center gap-1.5 mr-1">
+                <ShoppingCart className="w-3.5 h-3.5" /> Restock - {filament.type || filament.name}
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Grams to Add</label>
+                <div className="relative">
+                  <input
+                    type="number" min="1" placeholder="0"
+                    value={restockGrams}
+                    onChange={e => setRestockGrams(e.target.value)}
+                    className="w-28 text-sm border border-zinc-300 rounded px-2 py-1 pr-6 focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
+                  />
+                  <span className="absolute inset-y-0 right-2 flex items-center text-zinc-400 text-xs pointer-events-none">g</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Purchase Cost</label>
+                <div className="relative">
+                  <input
+                    type="number" min="0" placeholder="0.00"
+                    value={restockCost}
+                    onChange={e => setRestockCost(e.target.value)}
+                    className="w-32 text-sm border border-zinc-300 rounded px-2 py-1 pr-10 focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
+                  />
+                  <span className="absolute inset-y-0 right-2 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
+                </div>
+              </div>
+
+              {restockGramsNum > 0 && (
+                <div className="text-xs text-zinc-500 bg-white border border-zinc-200 rounded px-3 py-1.5 space-y-0.5">
+                  <div>New stock: <strong className="text-zinc-800">{newTotalGrams.toLocaleString()}g</strong></div>
+                  <div>Avg cost: <strong className="text-emerald-700">PHP {newAvgCostPerKg.toFixed(2)}/kg</strong></div>
+                </div>
+              )}
+
+              <div className="flex gap-1.5 ml-auto">
+                <button
+                  onClick={handleRestockConfirm}
+                  disabled={restockGramsNum <= 0}
+                  className="text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded transition-colors disabled:opacity-40 flex items-center gap-1"
+                >
+                  <Check className="w-3.5 h-3.5" /> Confirm
+                </button>
+                <button
+                  onClick={() => { setRestocking(false); setRestockGrams(''); setRestockCost(''); }}
+                  className="text-xs font-semibold bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-600 px-3 py-1.5 rounded transition-colors flex items-center gap-1"
+                >
+                  <X className="w-3.5 h-3.5" /> Cancel
+                </button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
-function MaterialRow({ material, onUpdate, onDelete }) {
+function MaterialRow({ material, onUpdate, onDelete, onRestock }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(material);
+  const [draft, setDraft] = useState(() => normalizeMaterial(material));
+  const [restocking, setRestocking] = useState(false);
+  const [restockQty, setRestockQty] = useState('');
+  const [restockCost, setRestockCost] = useState('');
+
+  useEffect(() => {
+    setDraft(normalizeMaterial(material));
+  }, [material]);
 
   const handleSave = () => {
-    onUpdate(draft);
-    setEditing(false);
-  };
-  const handleCancel = () => {
-    setDraft(material);
+    onUpdate(normalizeMaterial(draft));
     setEditing(false);
   };
 
-  const isLow = material.quantity <= LOW_STOCK_THRESHOLD_QTY;
+  const handleCancel = () => {
+    setDraft(normalizeMaterial(material));
+    setEditing(false);
+  };
+
+  const normalizedMaterial = normalizeMaterial(material);
+  const restockQtyNum = parseFloat(restockQty) || 0;
+  const restockCostNum = parseFloat(restockCost) || 0;
+  const currentBulkPrice = getMaterialBulkPrice(normalizedMaterial);
+  const currentUnitPrice = getMaterialUnitPrice(normalizedMaterial);
+  const newTotalQty = normalizedMaterial.quantity + restockQtyNum;
+  const newTotalBulkPrice = currentBulkPrice + restockCostNum;
+  const newAvgCostPerUnit = newTotalQty > 0 ? (newTotalBulkPrice / newTotalQty) : currentUnitPrice;
+  const isLow = normalizedMaterial.quantity <= LOW_STOCK_THRESHOLD_QTY;
+
+  const handleRestockConfirm = () => {
+    if (restockQtyNum <= 0) return;
+    const roundedCostPerUnit = roundCurrency(newAvgCostPerUnit);
+    onUpdate({
+      ...normalizedMaterial,
+      quantity: newTotalQty,
+      bulkPrice: roundCurrency(newTotalBulkPrice),
+      costPerUnit: roundedCostPerUnit,
+    });
+    onRestock?.({
+      date: new Date().toISOString(),
+      itemType: 'material',
+      itemId: normalizedMaterial.id,
+      itemLabel: normalizedMaterial.name,
+      itemCategory: normalizedMaterial.category,
+      unitLabel: normalizedMaterial.unit,
+      quantityAdded: restockQtyNum,
+      purchaseCost: restockCostNum,
+      prevCostPerUnit: currentUnitPrice,
+      newCostPerUnit: roundedCostPerUnit,
+      prevQuantity: normalizedMaterial.quantity,
+      newQuantity: newTotalQty,
+    });
+    setRestockQty('');
+    setRestockCost('');
+    setRestocking(false);
+  };
 
   if (editing) {
     return (
       <tr className="bg-zinc-50 border-b border-zinc-100">
         <td className="px-4 py-2">
-          <input
-            className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900"
-            value={draft.name}
-            onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
-            placeholder="Name"
-          />
+          <input className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900" value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} placeholder="Name" />
         </td>
         <td className="px-4 py-2">
-          <input
-            className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900"
-            value={draft.category}
-            onChange={e => setDraft(d => ({ ...d, category: e.target.value }))}
-            placeholder="Category"
-          />
+          <input className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900" value={draft.category} onChange={e => setDraft(d => ({ ...d, category: e.target.value }))} placeholder="Category" />
         </td>
         <td className="px-4 py-2">
-          <input
-            type="number" min="0"
-            className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900"
-            value={draft.quantity}
-            onChange={e => setDraft(d => ({ ...d, quantity: Number(e.target.value) }))}
-          />
+          <input type="number" min="0" className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900" value={draft.quantity} onChange={e => setDraft(d => ({ ...d, quantity: Number(e.target.value) }))} />
         </td>
         <td className="px-4 py-2">
-          <input
-            className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900"
-            value={draft.unit}
-            onChange={e => setDraft(d => ({ ...d, unit: e.target.value }))}
-            placeholder="unit"
-          />
+          <input className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900" value={draft.unit} onChange={e => setDraft(d => ({ ...d, unit: e.target.value }))} placeholder="unit" />
         </td>
         <td className="px-4 py-2">
           <div className="relative">
-            <input
-              type="number" min="0"
-              className="w-full text-sm border border-zinc-300 rounded px-2 py-1 pr-10 focus:outline-none focus:ring-1 focus:ring-zinc-900"
-              value={draft.costPerUnit}
-              onChange={e => setDraft(d => ({ ...d, costPerUnit: Number(e.target.value) }))}
-            />
+            <input type="number" min="0" className="w-full text-sm border border-zinc-300 rounded px-2 py-1 pr-10 focus:outline-none focus:ring-1 focus:ring-zinc-900" value={draft.bulkPrice ?? ''} onChange={e => setDraft(d => ({ ...d, bulkPrice: Number(e.target.value) }))} />
             <span className="absolute inset-y-0 right-2 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
           </div>
+          <div className="mt-1 text-[10px] text-zinc-500">Unit price: PHP {getMaterialUnitPrice(draft).toFixed(2)}/{draft.unit || 'unit'}</div>
         </td>
         <td className="px-4 py-2">
-          <input
-            className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900"
-            value={draft.notes}
-            onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))}
-            placeholder="Notes"
-          />
+          <input className="w-full text-sm border border-zinc-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zinc-900" value={draft.notes} onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
         </td>
         <td className="px-4 py-2">
           <div className="flex gap-1">
@@ -226,93 +422,522 @@ function MaterialRow({ material, onUpdate, onDelete }) {
   }
 
   return (
-    <tr className={`border-b border-zinc-100 hover:bg-zinc-50/70 transition-colors ${isLow ? 'bg-amber-50/40' : 'bg-white'}`}>
-      <td className="px-4 py-3 text-sm font-semibold text-zinc-800 flex items-center gap-2">
-        {isLow && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" title="Low stock" />}
-        {material.name}
-      </td>
-      <td className="px-4 py-3">
-        <span className="text-xs font-medium bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">{material.category}</span>
-      </td>
-      <td className="px-4 py-3">
-        <span className={`text-sm font-bold ${isLow ? 'text-amber-600' : 'text-zinc-800'}`}>{material.quantity.toLocaleString()}</span>
-        <span className="text-xs text-zinc-400 ml-1">{material.unit}</span>
-      </td>
-      <td className="px-4 py-3 text-sm text-zinc-500 hidden">{material.unit}</td>
-      <td className="px-4 py-3 text-sm text-zinc-600">PHP {material.costPerUnit?.toLocaleString() ?? '—'}</td>
-      <td className="px-4 py-3 text-xs text-zinc-400 max-w-[140px] truncate">{material.notes || '—'}</td>
-      <td className="px-4 py-3">
-        <div className="flex gap-1">
-          <button onClick={() => setEditing(true)} className="p-1.5 text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 rounded transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
-          <button onClick={() => onDelete(material.id)} className="p-1.5 text-zinc-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr className={`border-b border-zinc-100 hover:bg-zinc-50/70 transition-colors ${isLow ? 'bg-amber-50/40' : 'bg-white'}`}>
+        <td className="px-4 py-3 text-sm font-semibold text-zinc-800 flex items-center gap-2">
+          {isLow && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" title="Low stock" />}
+          {normalizedMaterial.name}
+        </td>
+        <td className="px-4 py-3"><span className="text-xs font-medium bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">{normalizedMaterial.category}</span></td>
+        <td className="px-4 py-3">
+          <span className={`text-sm font-bold ${isLow ? 'text-amber-600' : 'text-zinc-800'}`}>{normalizedMaterial.quantity.toLocaleString()}</span>
+          <span className="text-xs text-zinc-400 ml-1">{normalizedMaterial.unit}</span>
+        </td>
+        <td className="px-4 py-3 text-sm text-zinc-500 hidden">{normalizedMaterial.unit}</td>
+        <td className="px-4 py-3 text-sm text-zinc-600">PHP {getMaterialUnitPrice(normalizedMaterial).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td className="px-4 py-3 text-xs text-zinc-400 max-w-[140px] truncate">{normalizedMaterial.notes || '-'}</td>
+        <td className="px-4 py-3">
+          <div className="flex gap-1">
+            <button onClick={() => { setEditing(true); setRestocking(false); }} className="p-1.5 text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 rounded transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
+            <button onClick={() => { setRestocking(r => !r); setEditing(false); }} className={`p-1.5 rounded transition-colors ${restocking ? 'text-emerald-600 bg-emerald-50' : 'text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50'}`} title="Restock"><ShoppingCart className="w-3.5 h-3.5" /></button>
+            <button onClick={() => onDelete(normalizedMaterial.id)} className="p-1.5 text-zinc-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+          </div>
+        </td>
+      </tr>
+
+      {restocking && (
+        <tr className="bg-emerald-50/60 border-b border-emerald-100">
+          <td colSpan={7} className="px-4 py-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="text-xs font-bold uppercase tracking-widest text-emerald-700 flex items-center gap-1.5 mr-1"><ShoppingCart className="w-3.5 h-3.5" /> Restock - {normalizedMaterial.name}</div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Quantity to Add</label>
+                <div className="relative">
+                  <input type="number" min="1" placeholder="0" value={restockQty} onChange={e => setRestockQty(e.target.value)} className="w-28 text-sm border border-zinc-300 rounded px-2 py-1 pr-10 focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white" />
+                  <span className="absolute inset-y-0 right-2 flex items-center text-zinc-400 text-xs pointer-events-none">{normalizedMaterial.unit}</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Bulk Price</label>
+                <div className="relative">
+                  <input type="number" min="0" placeholder="0.00" value={restockCost} onChange={e => setRestockCost(e.target.value)} className="w-32 text-sm border border-zinc-300 rounded px-2 py-1 pr-10 focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white" />
+                  <span className="absolute inset-y-0 right-2 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
+                </div>
+              </div>
+
+              {restockQtyNum > 0 && (
+                <div className="text-xs text-zinc-500 bg-white border border-zinc-200 rounded px-3 py-1.5 space-y-0.5">
+                  <div>New stock: <strong className="text-zinc-800">{newTotalQty.toLocaleString()} {normalizedMaterial.unit}</strong></div>
+                  <div>Bulk value: <strong className="text-zinc-800">PHP {roundCurrency(newTotalBulkPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></div>
+                  <div>Unit price: <strong className="text-emerald-700">PHP {newAvgCostPerUnit.toFixed(2)}/{normalizedMaterial.unit}</strong></div>
+                </div>
+              )}
+
+              <div className="flex gap-1.5 ml-auto">
+                <button onClick={handleRestockConfirm} disabled={restockQtyNum <= 0} className="text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded transition-colors disabled:opacity-40 flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Confirm</button>
+                <button onClick={() => { setRestocking(false); setRestockQty(''); setRestockCost(''); }} className="text-xs font-semibold bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-600 px-3 py-1.5 rounded transition-colors flex items-center gap-1"><X className="w-3.5 h-3.5" /> Cancel</button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
-
-// ─── Main Inventory View ───────────────────────────────────────────────────
-
 export default function InventoryView() {
-  const [filaments, setFilaments] = useLocalStorage('inventory_filaments', DEFAULT_FILAMENTS);
-  const [materials, setMaterials] = useLocalStorage('inventory_materials', DEFAULT_MATERIALS);
+  const [filaments, setFilaments] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [inventoryLoading, setInventoryLoading] = useState(true);
+  const [purchaseHistory, setPurchaseHistory] = useState([]);
+  const [purchaseHistoryLoading, setPurchaseHistoryLoading] = useState(true);
   const [activeSection, setActiveSection] = useState('filaments');
 
-  // ── Filament CRUD ──────────────────────────────────────────────────────
+  useEffect(() => {
+    syncInventoryCache({ filaments, materials });
+  }, [filaments, materials]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadInventory = async () => {
+      setInventoryLoading(true);
+
+      try {
+        const [dbFilaments, dbMaterials] = await Promise.all([
+          fetchInventoryFilaments(),
+          fetchInventoryMaterials(),
+        ]);
+
+        if (cancelled) return;
+
+        const localFilaments = (() => {
+          try {
+            const raw = localStorage.getItem('inventory_filaments');
+            return raw ? JSON.parse(raw) : [];
+          } catch {
+            return [];
+          }
+        })();
+
+        const localMaterials = (() => {
+          try {
+            const raw = localStorage.getItem('inventory_materials');
+            return raw ? JSON.parse(raw).map(normalizeMaterial) : [];
+          } catch {
+            return [];
+          }
+        })();
+
+        let nextFilaments = dbFilaments;
+        let nextMaterials = dbMaterials.map(normalizeMaterial);
+
+        if (dbFilaments.length === 0 && localFilaments.length > 0) {
+          const { data, error } = await supabase
+            .from(INVENTORY_FILAMENTS_TABLE)
+            .insert(localFilaments.map(mapFilamentStateToRow))
+            .select('*');
+          if (!error && !cancelled) {
+            nextFilaments = (data || []).map((row) => ({
+              id: row.id,
+              type: row.type,
+              brand: row.brand,
+              color: row.color,
+              weightGrams: Number(row.weight_grams),
+              costPerKg: Number(row.cost_per_kg),
+              notes: row.notes,
+            }));
+          }
+        }
+
+        if (dbMaterials.length === 0 && localMaterials.length > 0) {
+          const { data, error } = await supabase
+            .from(INVENTORY_MATERIALS_TABLE)
+            .insert(localMaterials.map(mapMaterialStateToRow))
+            .select('*');
+          if (!error && !cancelled) {
+            nextMaterials = (data || []).map((row) =>
+              normalizeMaterial({
+                id: row.id,
+                name: row.name,
+                category: row.category,
+                quantity: Number(row.quantity),
+                unit: row.unit,
+                bulkPrice: Number(row.bulk_price),
+                costPerUnit: Number(row.cost_per_unit),
+                notes: row.notes,
+              }),
+            );
+          }
+        }
+
+        if (cancelled) return;
+        setFilaments(nextFilaments);
+        setMaterials(nextMaterials);
+      } catch (error) {
+        console.error('Failed to load inventory from Supabase:', error);
+        setFilaments(DEFAULT_FILAMENTS);
+        setMaterials(DEFAULT_MATERIALS.map(normalizeMaterial));
+      } finally {
+        if (!cancelled) setInventoryLoading(false);
+      }
+    };
+
+    loadInventory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPurchaseHistory = async () => {
+      setPurchaseHistoryLoading(true);
+
+      const localEntries = (() => {
+        try {
+          const raw = localStorage.getItem('inventory_purchase_history');
+          return raw ? JSON.parse(raw) : [];
+        } catch {
+          return [];
+        }
+      })();
+
+      const { data, error } = await supabase
+        .from(PURCHASE_HISTORY_TABLE)
+        .select('*')
+        .order('date', { ascending: false });
+
+      if (error) {
+        console.error('Failed to load purchase history from Supabase:', error);
+        if (!cancelled) {
+          setPurchaseHistory(localEntries);
+          setPurchaseHistoryLoading(false);
+        }
+        return;
+      }
+
+      if (localEntries.length > 0) {
+        const existingIds = new Set((data || []).map(entry => entry.id));
+        const missingLocalEntries = localEntries.filter(entry => !existingIds.has(entry.id));
+
+        if (missingLocalEntries.length > 0) {
+          const { error: importError } = await supabase
+            .from(PURCHASE_HISTORY_TABLE)
+            .insert(missingLocalEntries.map(mapHistoryEntryToRow));
+
+          if (importError) {
+            console.error('Failed to import local purchase history into Supabase:', importError);
+          } else {
+            localStorage.removeItem('inventory_purchase_history');
+          }
+        } else {
+          localStorage.removeItem('inventory_purchase_history');
+        }
+      }
+
+      const { data: refreshedData, error: refreshError } = await supabase
+        .from(PURCHASE_HISTORY_TABLE)
+        .select('*')
+        .order('date', { ascending: false });
+
+      if (cancelled) return;
+
+      if (refreshError) {
+        console.error('Failed to refresh purchase history from Supabase:', refreshError);
+        setPurchaseHistory(data || []);
+      } else {
+        setPurchaseHistory((refreshedData || []).map(mapHistoryRowToEntry));
+      }
+
+      setPurchaseHistoryLoading(false);
+    };
+
+    loadPurchaseHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const addToHistory = async (entry) => {
+    const mappedEntry = mapHistoryEntryToRow(entry);
+    const { data, error } = await supabase
+      .from(PURCHASE_HISTORY_TABLE)
+      .insert(mappedEntry)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Failed to save purchase history entry to Supabase:', error);
+      setPurchaseHistory(prev => [entry, ...prev]);
+      return;
+    }
+
+    setPurchaseHistory(prev => [mapHistoryRowToEntry(data), ...prev]);
+  };
+
+  const clearHistory = async () => {
+    if (window.confirm('Clear all purchase history? This cannot be undone.')) {
+      const { error } = await supabase
+        .from(PURCHASE_HISTORY_TABLE)
+        .delete()
+        .not('id', 'is', null);
+
+      if (error) {
+        console.error('Failed to clear purchase history from Supabase:', error);
+        return;
+      }
+
+      setPurchaseHistory([]);
+    }
+  };
+
+  const voidHistoryEntry = async (entryId) => {
+    if (!window.confirm('Void this purchase history entry? This will remove the record only.')) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from(PURCHASE_HISTORY_TABLE)
+      .delete()
+      .eq('id', entryId);
+
+    if (error) {
+      console.error('Failed to void purchase history entry in Supabase:', error);
+      return;
+    }
+
+    setPurchaseHistory(prev => prev.filter(entry => entry.id !== entryId));
+  };
+
+  const canUndoHistoryEntry = (entry) => {
+    const isFilamentEntry = typeof entry.gramsAdded === 'number';
+
+    if (isFilamentEntry) {
+      const filament = filaments.find(f => f.id === entry.filamentId);
+      if (!filament) return false;
+      return filament.weightGrams === entry.newWeightGrams && filament.costPerKg === entry.newCostPerKg;
+    }
+
+    const material = materials.find(m => m.id === entry.itemId);
+    if (!material) return false;
+    const normalizedMaterial = normalizeMaterial(material);
+    return normalizedMaterial.quantity === entry.newQuantity && normalizedMaterial.costPerUnit === entry.newCostPerUnit;
+  };
+
+  const undoHistoryEntry = async (entry) => {
+    if (!canUndoHistoryEntry(entry)) {
+      window.alert('This purchase can no longer be undone because the item stock changed after this entry.');
+      return;
+    }
+
+    if (!window.confirm('Undo this purchase entry? This will roll back the inventory item and remove the history record.')) {
+      return;
+    }
+
+    const isFilamentEntry = typeof entry.gramsAdded === 'number';
+
+    if (isFilamentEntry) {
+      const rollback = {
+        weight_grams: entry.prevWeightGrams,
+        cost_per_kg: entry.prevCostPerKg,
+        updated_at: new Date().toISOString(),
+      };
+      const { error: rollbackError } = await supabase
+        .from(INVENTORY_FILAMENTS_TABLE)
+        .update(rollback)
+        .eq('id', entry.filamentId);
+
+      if (rollbackError) {
+        console.error('Failed to roll back filament inventory in Supabase:', rollbackError);
+        return;
+      }
+
+      setFilaments(prev => prev.map(f => (
+        f.id === entry.filamentId
+          ? { ...f, weightGrams: entry.prevWeightGrams, costPerKg: entry.prevCostPerKg }
+          : f
+      )));
+    } else {
+      const rollback = {
+        quantity: entry.prevQuantity,
+        bulk_price: roundCurrency((entry.prevCostPerUnit || 0) * (entry.prevQuantity || 0)),
+        cost_per_unit: entry.prevCostPerUnit,
+        updated_at: new Date().toISOString(),
+      };
+      const { error: rollbackError } = await supabase
+        .from(INVENTORY_MATERIALS_TABLE)
+        .update(rollback)
+        .eq('id', entry.itemId);
+
+      if (rollbackError) {
+        console.error('Failed to roll back material inventory in Supabase:', rollbackError);
+        return;
+      }
+
+      setMaterials(prev => prev.map(m => (
+        m.id === entry.itemId
+          ? normalizeMaterial({
+            ...m,
+            quantity: entry.prevQuantity,
+            bulkPrice: roundCurrency((entry.prevCostPerUnit || 0) * (entry.prevQuantity || 0)),
+            costPerUnit: entry.prevCostPerUnit,
+          })
+          : m
+      )));
+    }
+
+    const { error } = await supabase
+      .from(PURCHASE_HISTORY_TABLE)
+      .delete()
+      .eq('id', entry.id);
+
+    if (error) {
+      console.error('Failed to delete undone purchase history entry from Supabase:', error);
+      return;
+    }
+
+    setPurchaseHistory(prev => prev.filter(historyEntry => historyEntry.id !== entry.id));
+  };
+
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Filament CRUD ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   const addFilament = () => {
-    setFilaments(prev => [...prev, {
-      id: Date.now(),
-      type: FILAMENT_TYPES[0],
-      brand: FILAMENT_BRANDS[0],
-      color: '',
-
-      weightGrams: 1000,
-      costPerKg: 700,
-      notes: ''
-    }]);
+    supabase
+      .from(INVENTORY_FILAMENTS_TABLE)
+      .insert(mapFilamentStateToRow({
+        type: FILAMENT_TYPES[0],
+        brand: FILAMENT_BRANDS[0],
+        color: '',
+        weightGrams: 0,
+        costPerKg: 0,
+        notes: '',
+      }))
+      .select('*')
+      .single()
+      .then(({ data, error }) => {
+        if (error) {
+          console.error('Failed to add filament to Supabase:', error);
+          return;
+        }
+        setFilaments(prev => [...prev, {
+          id: data.id,
+          type: data.type,
+          brand: data.brand,
+          color: data.color,
+          weightGrams: Number(data.weight_grams),
+          costPerKg: Number(data.cost_per_kg),
+          notes: data.notes,
+        }]);
+      });
   };
 
   const updateFilament = (updated) => {
-    setFilaments(prev => prev.map(f => f.id === updated.id ? updated : f));
+    supabase
+      .from(INVENTORY_FILAMENTS_TABLE)
+      .update(mapFilamentStateToRow(updated))
+      .eq('id', updated.id)
+      .then(({ error }) => {
+        if (error) {
+          console.error('Failed to update filament in Supabase:', error);
+          return;
+        }
+        setFilaments(prev => prev.map(f => f.id === updated.id ? updated : f));
+      });
   };
 
   const deleteFilament = (id) => {
     if (window.confirm('Remove this filament from inventory?')) {
-      setFilaments(prev => prev.filter(f => f.id !== id));
+      supabase
+        .from(INVENTORY_FILAMENTS_TABLE)
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) {
+            console.error('Failed to delete filament from Supabase:', error);
+            return;
+          }
+          setFilaments(prev => prev.filter(f => f.id !== id));
+        });
     }
   };
 
-  // ── Material CRUD ──────────────────────────────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Material CRUD ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   const addMaterial = () => {
-    setMaterials(prev => [...prev, {
-      id: Date.now(),
-      name: 'New Item',
-      category: 'Hardware',
-      quantity: 0,
-      unit: 'pcs',
-      costPerUnit: 0,
-      notes: ''
-    }]);
+    supabase
+      .from(INVENTORY_MATERIALS_TABLE)
+      .insert(mapMaterialStateToRow({
+        name: 'New Item',
+        category: 'Hardware',
+        quantity: 0,
+        unit: 'pcs',
+        bulkPrice: 0,
+        costPerUnit: 0,
+        notes: '',
+      }))
+      .select('*')
+      .single()
+      .then(({ data, error }) => {
+        if (error) {
+          console.error('Failed to add material to Supabase:', error);
+          return;
+        }
+        setMaterials(prev => [...prev, normalizeMaterial({
+          id: data.id,
+          name: data.name,
+          category: data.category,
+          quantity: Number(data.quantity),
+          unit: data.unit,
+          bulkPrice: Number(data.bulk_price),
+          costPerUnit: Number(data.cost_per_unit),
+          notes: data.notes,
+        })]);
+      });
   };
 
   const updateMaterial = (updated) => {
-    setMaterials(prev => prev.map(m => m.id === updated.id ? updated : m));
+    const normalized = normalizeMaterial(updated);
+    supabase
+      .from(INVENTORY_MATERIALS_TABLE)
+      .update(mapMaterialStateToRow(normalized))
+      .eq('id', normalized.id)
+      .then(({ error }) => {
+        if (error) {
+          console.error('Failed to update material in Supabase:', error);
+          return;
+        }
+        setMaterials(prev => prev.map(m => m.id === normalized.id ? normalized : m));
+      });
   };
 
   const deleteMaterial = (id) => {
     if (window.confirm('Remove this item from inventory?')) {
-      setMaterials(prev => prev.filter(m => m.id !== id));
+      supabase
+        .from(INVENTORY_MATERIALS_TABLE)
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) {
+            console.error('Failed to delete material from Supabase:', error);
+            return;
+          }
+          setMaterials(prev => prev.filter(m => m.id !== id));
+        });
     }
   };
 
-  // ── Stats ──────────────────────────────────────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Stats ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   const totalFilamentWeight = filaments.reduce((s, f) => s + f.weightGrams, 0);
   const lowFilaments = filaments.filter(f => f.weightGrams <= LOW_STOCK_THRESHOLD_GRAMS).length;
   const totalMatQty = materials.reduce((s, m) => s + m.quantity, 0);
   const lowMaterials = materials.filter(m => m.quantity <= LOW_STOCK_THRESHOLD_QTY).length;
+  const totalSpent = purchaseHistory.reduce((s, h) => s + (h.purchaseCost || 0), 0);
 
   return (
     <div className="space-y-6">
@@ -338,10 +963,10 @@ export default function InventoryView() {
           icon={<Layers className="w-4 h-4" />}
         />
         <StatCard
-          label="Material SKUs"
-          value={materials.length}
-          sub="tracked"
-          icon={<Package className="w-4 h-4" />}
+          label="Total Spent"
+          value={`PHP ${totalSpent.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          sub="on restocks"
+          icon={<Receipt className="w-4 h-4" />}
         />
         <StatCard
           label="Low Stock Alerts"
@@ -364,11 +989,20 @@ export default function InventoryView() {
           onClick={() => setActiveSection('materials')}
           className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-colors ${activeSection === 'materials' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}
         >
-          Materials & Hardware
+          Materials &amp; Hardware
+        </button>
+        <button
+          onClick={() => setActiveSection('history')}
+          className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-colors flex items-center gap-1.5 ${activeSection === 'history' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}
+        >
+          <Receipt className="w-3.5 h-3.5" /> Purchase History
+          {purchaseHistory.length > 0 && (
+            <span className="bg-zinc-200 text-zinc-600 text-[10px] font-bold px-1.5 py-0.5 rounded-full">{purchaseHistory.length}</span>
+          )}
         </button>
       </div>
 
-      {/* ── Filaments Table ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Filaments Table ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {activeSection === 'filaments' && (
         <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden">
           <div className="px-5 py-4 border-b border-zinc-200 flex items-center justify-between bg-zinc-50">
@@ -389,7 +1023,11 @@ export default function InventoryView() {
             </button>
           </div>
 
-          {filaments.length === 0 ? (
+          {inventoryLoading ? (
+            <div className="p-8 text-center text-zinc-400 text-sm border-b border-zinc-100">
+              Loading inventory...
+            </div>
+          ) : filaments.length === 0 ? (
             <div className="p-8 text-center text-zinc-400 text-sm border-b border-zinc-100">
               No filaments in inventory. Add one above.
             </div>
@@ -409,7 +1047,7 @@ export default function InventoryView() {
                 </thead>
                 <tbody>
                   {filaments.map(f => (
-                    <FilamentRow key={f.id} filament={f} onUpdate={updateFilament} onDelete={deleteFilament} />
+                    <FilamentRow key={f.id} filament={f} onUpdate={updateFilament} onDelete={deleteFilament} onRestock={addToHistory} />
                   ))}
                 </tbody>
               </table>
@@ -424,7 +1062,7 @@ export default function InventoryView() {
         </section>
       )}
 
-      {/* ── Materials Table ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Materials Table ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {activeSection === 'materials' && (
         <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden">
           <div className="px-5 py-4 border-b border-zinc-200 flex items-center justify-between bg-zinc-50">
@@ -445,7 +1083,11 @@ export default function InventoryView() {
             </button>
           </div>
 
-          {materials.length === 0 ? (
+          {inventoryLoading ? (
+            <div className="p-8 text-center text-zinc-400 text-sm border-b border-zinc-100">
+              Loading inventory...
+            </div>
+          ) : materials.length === 0 ? (
             <div className="p-8 text-center text-zinc-400 text-sm border-b border-zinc-100">
               No materials in inventory. Add one above.
             </div>
@@ -458,14 +1100,14 @@ export default function InventoryView() {
                     <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Category</th>
                     <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Qty</th>
                     <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500 hidden">Unit</th>
-                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Unit Cost</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Unit Price</th>
                     <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Notes</th>
                     <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {materials.map(m => (
-                    <MaterialRow key={m.id} material={m} onUpdate={updateMaterial} onDelete={deleteMaterial} />
+                    <MaterialRow key={m.id} material={m} onUpdate={updateMaterial} onDelete={deleteMaterial} onRestock={addToHistory} />
                   ))}
                 </tbody>
               </table>
@@ -475,6 +1117,117 @@ export default function InventoryView() {
           <div className="px-5 py-3 border-t border-zinc-100 bg-zinc-50/50 flex justify-end">
             <span className="text-xs text-zinc-400 font-medium">
               Total: <strong className="text-zinc-700">{totalMatQty.toLocaleString()} units</strong> across {materials.length} item{materials.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+        </section>
+      )}
+
+      {/* Purchase History Table */}
+      {activeSection === 'history' && (
+        <section className="bg-white border border-zinc-200 shadow-sm rounded-lg overflow-hidden">
+          <div className="px-5 py-4 border-b border-zinc-200 flex items-center justify-between bg-zinc-50">
+            <div className="flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-zinc-500" />
+              <h2 className="text-sm font-semibold text-zinc-900 uppercase tracking-widest">Purchase History</h2>
+              <span className="text-xs text-zinc-400 font-normal normal-case tracking-normal">(filament and material restocks)</span>
+            </div>
+            {purchaseHistory.length > 0 && (
+              <button
+                onClick={clearHistory}
+                className="text-xs font-medium text-red-500 hover:text-red-700 hover:bg-red-50 border border-red-200 px-2 py-1 rounded transition-colors flex items-center gap-1"
+              >
+                <Trash2 className="w-3 h-3" /> Clear History
+              </button>
+            )}
+          </div>
+
+          {purchaseHistoryLoading ? (
+            <div className="p-8 text-center text-zinc-400 text-sm">
+              Loading purchase history...
+            </div>
+          ) : purchaseHistory.length === 0 ? (
+            <div className="p-8 text-center text-zinc-400 text-sm">
+              No purchase history yet. Use the <ShoppingCart className="w-3.5 h-3.5 inline mb-0.5 mx-1" /> Restock button on any inventory item to record a purchase.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-zinc-200 bg-zinc-50/70">
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Date</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Item</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Type</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Added</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Cost Paid</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Batch Rate</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">New Avg</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Stock After</th>
+                    <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {purchaseHistory.map(h => {
+                    const isFilamentEntry = typeof h.gramsAdded === 'number';
+                    const itemLabel = h.itemLabel || h.filamentLabel || 'Unknown item';
+                    const itemTypeLabel = isFilamentEntry ? 'Filament' : (h.itemCategory || 'Material');
+                    const quantityAdded = isFilamentEntry ? h.gramsAdded : (h.quantityAdded || 0);
+                    const unitLabel = isFilamentEntry ? 'g' : (h.unitLabel || 'units');
+                    const batchRate = quantityAdded > 0 ? (h.purchaseCost / (quantityAdded / (isFilamentEntry ? 1000 : 1))) : 0;
+                    const batchCostPerKg = batchRate;
+                    const stockAfter = isFilamentEntry ? h.newWeightGrams : h.newQuantity;
+                    const averageUnitLabel = isFilamentEntry ? 'kg' : unitLabel;
+                    const canUndo = canUndoHistoryEntry(h);
+                    return (
+                      <tr key={h.id} className="border-b border-zinc-100 hover:bg-zinc-50/70 transition-colors bg-white">
+                        <td className="px-4 py-3 text-xs text-zinc-500 whitespace-nowrap">
+                          {new Date(h.date).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}
+                          <span className="block text-zinc-400">{new Date(h.date).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}</span>
+                        </td>
+                        <td className="px-4 py-3 text-sm font-semibold text-zinc-800">{itemLabel}</td>
+                        <td className="px-4 py-3 text-xs text-zinc-500">{itemTypeLabel}</td>
+                        <td className="px-4 py-3 text-sm text-zinc-700 font-medium">+{quantityAdded.toLocaleString()} {unitLabel}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-zinc-900">
+                          {h.purchaseCost > 0 ? `PHP ${h.purchaseCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-zinc-500">
+                          {h.purchaseCost > 0 ? `PHP ${batchCostPerKg.toFixed(2)}/${averageUnitLabel}` : '-'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                            PHP {(isFilamentEntry ? h.newCostPerKg : h.newCostPerUnit).toFixed(2)}/{averageUnitLabel}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-zinc-600">{stockAfter.toLocaleString()} {unitLabel}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => undoHistoryEntry(h)}
+                              disabled={!canUndo}
+                              title={canUndo ? 'Undo this purchase and roll back inventory' : 'Undo is only available while this entry matches the current stock state'}
+                              className="text-xs font-medium text-zinc-600 bg-white border border-zinc-200 hover:bg-zinc-50 px-2 py-1 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+                            >
+                              <RotateCcw className="w-3 h-3" /> Undo
+                            </button>
+                            <button
+                              onClick={() => voidHistoryEntry(h.id)}
+                              className="text-xs font-medium text-red-500 hover:text-red-700 hover:bg-red-50 border border-red-200 px-2 py-1 rounded transition-colors flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3 h-3" /> Void
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="px-5 py-3 border-t border-zinc-100 bg-zinc-50/50 flex justify-between items-center">
+            <span className="text-xs text-zinc-400">{purchaseHistory.length} purchase event{purchaseHistory.length !== 1 ? 's' : ''} recorded</span>
+            <span className="text-xs text-zinc-500 font-medium">
+              Total spent: <strong className="text-zinc-800">PHP {totalSpent.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
             </span>
           </div>
         </section>
@@ -496,3 +1249,5 @@ function StatCard({ label, value, sub, icon, alert }) {
     </div>
   );
 }
+
+

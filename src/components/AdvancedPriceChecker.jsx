@@ -1,6 +1,7 @@
-import { useReducer, useState } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabaseClient';
+import { adjustInventoryStock, fetchInventoryFilaments, fetchInventoryMaterials } from '../lib/inventory';
 import {
   Calculator, Plus, Trash2, Box, Zap, Clock, Coins, Wrench, CheckCircle2, Paintbrush, Shield, User, Layers
 } from 'lucide-react';
@@ -109,7 +110,7 @@ function formReducer(state, action) {
     case 'ADD_MATERIAL':
       return {
         ...state,
-        materials: [...state.materials, { id: Date.now(), name: '', cost: 0 }]
+        materials: [...state.materials, { id: Date.now(), inventoryId: '', name: '', quantity: 1, unit: '', costPerUnit: 0 }]
       };
     case 'UPDATE_MATERIAL':
       return {
@@ -158,12 +159,25 @@ export default function AdvancedPriceChecker({ config }) {
   });
 
   // Read inventory filaments from localStorage (kept in sync with InventoryView)
-  const [inventoryFilaments] = useState(() => {
-    try {
-      const saved = localStorage.getItem('inventory_filaments');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
+  const [inventoryFilaments, setInventoryFilaments] = useState([]);
+  const [inventoryMaterials, setInventoryMaterials] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.all([
+      fetchInventoryFilaments().catch(() => []),
+      fetchInventoryMaterials().catch(() => []),
+    ]).then(([filamentsData, materialsData]) => {
+      if (cancelled) return;
+      setInventoryFilaments(filamentsData);
+      setInventoryMaterials(materialsData);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const calcElectricityAndMaterials = () => {
     let totalKWh = 0;
@@ -218,7 +232,7 @@ export default function AdvancedPriceChecker({ config }) {
   const failureBufferCost = rawOpsCost * ((config?.failureRatePercent || 10) / 100);
 
   const laborCost = state.labors.reduce((sum, lab) => sum + (parseFloat(lab.hours || 0) * parseFloat(lab.rate || 0)), 0);
-  const matCost = state.materials.reduce((sum, mat) => sum + (parseFloat(mat.cost) || 0), 0);
+  const matCost = state.materials.reduce((sum, mat) => sum + ((parseFloat(mat.quantity) || 0) * (parseFloat(mat.costPerUnit) || 0)), 0);
   const logisticsCost = (parseFloat(state.packagingCost) || 0) + (parseFloat(state.shippingCost) || 0) + (parseFloat(state.miscellaneousCost) || 0);
 
   const servicesCost =
@@ -240,37 +254,41 @@ export default function AdvancedPriceChecker({ config }) {
   };
 
   // Deduct filament weights from inventory localStorage when an order is confirmed
-  const deductInventoryStock = () => {
-    try {
-      const saved = localStorage.getItem('inventory_filaments');
-      if (!saved) return;
-      let inventory = JSON.parse(saved);
+  const deductInventoryStock = async () => {
+    const filamentDeltaById = {};
+    const materialDeltaById = {};
 
-      // Aggregate total grams used per inventory filament ID across all plates
-      const usageMap = {};
-      state.plates.forEach(plate => {
-        plate.filaments.forEach(f => {
-          if (f.inventoryId) {
-            const key = String(f.inventoryId);
-            usageMap[key] = (usageMap[key] || 0) + (parseFloat(f.weight) || 0);
-          }
-        });
+    state.plates.forEach((plate) => {
+      plate.filaments.forEach((filament) => {
+        if (!filament.inventoryId) return;
+        const key = String(filament.inventoryId);
+        filamentDeltaById[key] = (filamentDeltaById[key] || 0) - (parseFloat(filament.weight) || 0);
       });
+    });
 
-      // Subtract from matching inventory items (floor at 0)
-      inventory = inventory.map(inv => {
-        const used = usageMap[String(inv.id)] || 0;
-        return used > 0 ? { ...inv, weightGrams: Math.max(0, inv.weightGrams - used) } : inv;
-      });
+    state.materials.forEach((material) => {
+      if (!material.inventoryId) return;
+      const key = String(material.inventoryId);
+      materialDeltaById[key] = (materialDeltaById[key] || 0) - (parseFloat(material.quantity) || 0);
+    });
 
-      localStorage.setItem('inventory_filaments', JSON.stringify(inventory));
-    } catch (err) {
-      console.error('Failed to deduct inventory stock:', err);
-    }
+    await adjustInventoryStock({ filamentDeltaById, materialDeltaById });
   };
 
   const confirmOrderMutation = useMutation({
     mutationFn: async () => {
+      const editorState = {
+        clientName: state.clientName,
+        clientContact: state.clientPhone,
+        itemName: state.itemName,
+        plates: state.plates,
+        materials: state.materials,
+        labors: state.labors,
+        packagingCost: state.packagingCost,
+        shippingCost: state.shippingCost,
+        miscellaneousCost: state.miscellaneousCost,
+      };
+
       const financial_breakdown = {
         electricityCost: elecCost,
         totalKWh: totalKWh,
@@ -283,7 +301,8 @@ export default function AdvancedPriceChecker({ config }) {
         servicesCost: servicesCost,
         markupCost: markupCost,
         failureRatePercent: config?.failureRatePercent || 10,
-        markupPercent: config?.markupPercent || 30
+        markupPercent: config?.markupPercent || 30,
+        editorState
       };
 
       const { data: orderId, error: rpcErr } = await supabase.rpc('create_order_with_items', {
@@ -301,16 +320,15 @@ export default function AdvancedPriceChecker({ config }) {
       if (rpcErr) throw rpcErr;
       return orderId;
     },
-    onSuccess: () => {
-      deductInventoryStock();
+    onSuccess: async () => {
+      await deductInventoryStock();
       alert('Order successfully saved to Supabase (Optimized)!');
       queryClient.invalidateQueries({ queryKey: ['dashboard-data'] });
       setShowModal(false);
     },
     onError: (e) => {
       console.error('Database Error:', e.message);
-      deductInventoryStock();
-      alert('Order processed locally! (Set ENV variables and apply SQL migration to write to Supabase)');
+      alert('Failed to save order to Supabase.');
       setShowModal(false);
     }
   });
@@ -547,21 +565,66 @@ export default function AdvancedPriceChecker({ config }) {
             ) : (
                 <div className="space-y-2">
                   {state.materials.map(mat => (
-                    <div key={mat.id} className="flex gap-2 items-center">
-                      <input
-                        type="text" placeholder="Description"
-                        value={mat.name}
-                        onChange={(e) => dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'name', value: e.target.value })}
-                        className="flex-1 px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900"
-                      />
-                      <div className="relative w-32 shrink-0">
-                        <input
-                          type="number" placeholder="0.00" min="0"
-                          value={mat.cost}
-                          onChange={(e) => dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'cost', value: e.target.value === '' ? '' : Number(e.target.value) })}
-                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
-                        />
-                        <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
+                    <div key={mat.id} className="grid grid-cols-1 md:grid-cols-[1.7fr_0.8fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Inventory Item</label>
+                        {inventoryMaterials.length > 0 ? (
+                          <select
+                            value={mat.inventoryId ?? ''}
+                            onChange={(e) => {
+                              const inv = inventoryMaterials.find(material => String(material.id) === e.target.value);
+                              if (inv) {
+                                const quantity = Math.max(1, parseFloat(mat.quantity) || 1);
+                                const unitPrice = Number(inv.costPerUnit ?? (((Number(inv.bulkPrice) || 0) / Math.max(1, Number(inv.quantity) || 1)) || 0));
+                                dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'inventoryId', value: inv.id });
+                                dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'name', value: inv.name });
+                                dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'unit', value: inv.unit || '' });
+                                dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'costPerUnit', value: unitPrice });
+                                if ((parseFloat(mat.quantity) || 0) <= 0) {
+                                  dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'quantity', value: quantity });
+                                }
+                              } else {
+                                dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'inventoryId', value: '' });
+                              }
+                            }}
+                            className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900"
+                          >
+                            <option value="">-- select material/hardware --</option>
+                            {inventoryMaterials.map(inv => (
+                              <option key={inv.id} value={String(inv.id)}>
+                                {inv.name}{inv.category ? ` - ${inv.category}` : ''}{inv.unit ? ` (${inv.unit})` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="px-3 py-2 bg-zinc-50 border border-dashed border-zinc-200 rounded-md text-xs text-zinc-400 italic">
+                            No inventory materials - add them in the Inventory tab
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Qty</label>
+                        <div className="relative">
+                          <input
+                            type="number" placeholder="0" min="0" step="1"
+                            value={mat.quantity}
+                            onChange={(e) => dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'quantity', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                            className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-10 font-medium"
+                          />
+                          <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">{mat.unit || 'pcs'}</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Cost / Unit</label>
+                        <div className="relative">
+                          <input
+                            type="number" placeholder="0.00" min="0" step="0.01"
+                            value={mat.costPerUnit}
+                            onChange={(e) => dispatch({ type: 'UPDATE_MATERIAL', id: mat.id, field: 'costPerUnit', value: e.target.value === '' ? '' : Number(e.target.value) })}
+                            className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 text-left pr-12 font-medium"
+                          />
+                          <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
+                        </div>
                       </div>
                       <button
                         onClick={() => dispatch({ type: 'REMOVE_MATERIAL', id: mat.id })}
