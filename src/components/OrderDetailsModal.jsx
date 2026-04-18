@@ -142,6 +142,7 @@ function toEditorState(order, config) {
       shippingCost: persisted.shippingCost ?? 0,
       miscellaneousCost: persisted.miscellaneousCost ?? 0,
       isFamilyPricing: persisted.isFamilyPricing || false,
+      customFinalPrice: snapshot.customFinalPrice ?? '',
     };
   }
 
@@ -197,6 +198,7 @@ function toEditorState(order, config) {
     shippingCost: 0,
     miscellaneousCost: 0,
     isFamilyPricing: false,
+    customFinalPrice: snapshot.customFinalPrice ?? '',
   };
 }
 
@@ -273,7 +275,8 @@ function calculateTotals(editorState, config) {
     logisticsCost;
   const appliedMarkupPercent = editorState.isFamilyPricing ? (config.familyMarkupPercent || 15) : (config.markupPercent || 30);
   const markupCost = markupBase * (appliedMarkupPercent / 100);
-  const finalPrice = markupBase + markupCost;
+  const calculatedPrice = markupBase + markupCost;
+  const finalPrice = editorState.customFinalPrice !== '' ? Number(editorState.customFinalPrice) : calculatedPrice;
 
   return {
     totalKWh,
@@ -288,6 +291,7 @@ function calculateTotals(editorState, config) {
     logisticsCost,
     markupPercent: appliedMarkupPercent,
     markupCost,
+    calculatedPrice,
     finalPrice,
     totalLaborHours: editorState.labors.reduce(
       (sum, labor) => sum + (parseFloat(labor.hours) || 0),
@@ -403,6 +407,7 @@ export default function OrderDetailsModal({ orderId, onClose }) {
         markupCost: totals.markupCost,
         failureRatePercent: config.failureRatePercent || 10,
         markupPercent: totals.markupPercent,
+        customFinalPrice: editorState.customFinalPrice !== '' ? Number(editorState.customFinalPrice) : null,
         editorState,
       };
 
@@ -1068,11 +1073,26 @@ export default function OrderDetailsModal({ orderId, onClose }) {
                     </div>
 
                     <div className="pt-2 flex flex-col items-end">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mb-1">Override Final Sell Price (Optional)</span>
+                      <input 
+                         type="number" 
+                         min="0" 
+                         step="0.01" 
+                         placeholder={`Calc: PHP ${formatMoney(totals.calculatedPrice)}`}
+                         value={editorState.customFinalPrice} 
+                         onChange={e => updateEditorField('customFinalPrice', e.target.value)} 
+                         className="w-48 px-3 py-1.5 text-right bg-zinc-50 border border-zinc-200 rounded-md text-sm font-medium mb-4 focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors"
+                      />
                       <span className="text-xs font-bold uppercase tracking-widest text-zinc-400 mb-1">Total Billable</span>
                       <div className="flex items-baseline gap-1">
                         <span className="text-lg font-semibold text-zinc-400">PHP</span>
                         <span className="text-4xl font-extrabold text-zinc-900 tracking-tight">{formatMoney(totals.finalPrice)}</span>
                       </div>
+                      {editorState.customFinalPrice !== '' && (
+                        <span className="text-[10px] text-zinc-400 mt-1 uppercase font-semibold tracking-wider bg-zinc-100 px-2 py-0.5 rounded text-red-500">
+                          Overridden (Calc: {formatMoney(totals.calculatedPrice)})
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>

@@ -158,6 +158,7 @@ export default function AdvancedPriceChecker({ config }) {
     painting: false,
     assembly: false
   });
+  const [customFinalPrice, setCustomFinalPrice] = useState('');
 
   // Read inventory filaments from localStorage (kept in sync with InventoryView)
   const [inventoryFilaments, setInventoryFilaments] = useState([]);
@@ -304,6 +305,7 @@ export default function AdvancedPriceChecker({ config }) {
         markupCost: markupCost,
         failureRatePercent: config?.failureRatePercent || 10,
         markupPercent: appliedMarkupPercent,
+        customFinalPrice: customFinalPrice !== '' ? Number(customFinalPrice) : null,
         editorState
       };
 
@@ -315,7 +317,7 @@ export default function AdvancedPriceChecker({ config }) {
         p_print_time: totalMinutes / 60,
         p_plates: state.plates.length,
         p_labor_hours: state.labors.reduce((sum, lab) => sum + parseFloat(lab.hours || 0), 0),
-        p_total_price: finalPrice,
+        p_total_price: customFinalPrice !== '' ? Number(customFinalPrice) : finalPrice,
         p_financial_breakdown: financial_breakdown
       });
 
@@ -945,11 +947,27 @@ export default function AdvancedPriceChecker({ config }) {
               </div>
             </div>
 
+            <div className="p-5 border-t border-zinc-200 bg-white">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Override Final Sell Price (Optional)</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder={`Default: PHP ${finalPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  value={customFinalPrice}
+                  onChange={(e) => setCustomFinalPrice(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-md focus:bg-white focus:outline-none focus:ring-1 focus:ring-zinc-900 focus:border-zinc-900 transition-colors text-sm text-zinc-900 font-medium"
+                />
+                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs font-semibold pointer-events-none">PHP</span>
+              </div>
+            </div>
+
             <div className="p-4 border-t border-zinc-200 bg-zinc-50 flex items-center justify-between">
               <div className="flex items-baseline gap-1">
                 <span className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">New Total:</span>
                 <span className="text-lg font-bold text-zinc-900 tracking-tight ml-1">
-                  PHP {finalPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  PHP {customFinalPrice !== '' ? Number(customFinalPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : finalPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
               <button
