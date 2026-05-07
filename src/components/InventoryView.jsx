@@ -1260,7 +1260,7 @@ export default function InventoryView() {
       </div>
 
       {/* Section tabs */}
-      <div className="flex gap-1 bg-zinc-100 p-1 rounded-lg w-fit">
+      <div className="flex gap-1 bg-zinc-100 p-1 rounded-xl w-full sm:w-fit overflow-x-auto whitespace-nowrap scrollbar-hide">
         <button
           onClick={() => setActiveSection('filaments')}
           className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-colors ${activeSection === 'filaments' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}

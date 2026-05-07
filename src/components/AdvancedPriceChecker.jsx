@@ -483,7 +483,7 @@ export default function AdvancedPriceChecker({ config }) {
                   
                   <div className="space-y-3">
                     {plate.filaments.map((filament, fIndex) => (
-                      <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1.5fr_1fr_1fr_auto] gap-3 items-end bg-zinc-50/50 p-3 rounded border border-zinc-100">
+                      <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1.5fr_1fr_1fr_auto] gap-4 md:gap-3 items-end bg-zinc-50/50 p-4 md:p-3 rounded border border-zinc-100">
 
                         {/* Inventory Filament Selector */}
                         <div>
@@ -579,9 +579,9 @@ export default function AdvancedPriceChecker({ config }) {
                  No supplementary items.
                </div>
             ) : (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {state.materials.map(mat => (
-                    <div key={mat.id} className="grid grid-cols-1 md:grid-cols-[1.7fr_0.8fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
+                    <div key={mat.id} className="grid grid-cols-1 md:grid-cols-[1.7fr_0.8fr_1fr_auto] gap-4 md:gap-3 items-end bg-zinc-50 p-4 md:p-3 rounded border border-zinc-100">
                       <div>
                         <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Inventory Item</label>
                         {inventoryMaterials.length > 0 ? (
@@ -674,7 +674,7 @@ export default function AdvancedPriceChecker({ config }) {
             ) : (
               <div className="space-y-4">
                 {state.labors.map((lab) => (
-                  <div key={lab.id} className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
+                  <div key={lab.id} className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_auto] gap-4 md:gap-3 items-end bg-zinc-50 p-4 md:p-3 rounded border border-zinc-100">
                     <div>
                       <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Operation Phase</label>
                       <select
@@ -768,7 +768,7 @@ export default function AdvancedPriceChecker({ config }) {
       </div>
 
       {/* RIGHT COLUMN: Output Sticky Block */}
-      <div className="w-full lg:w-[360px] sticky top-6">
+      <div className="w-full lg:w-[360px] lg:sticky top-6">
 
         <div className="bg-white border border-zinc-300 shadow-xl shadow-zinc-100 rounded-lg overflow-hidden flex flex-col">
 

@@ -25,3 +25,13 @@
   0%, 100% { opacity: 1; }
   50% { opacity: .5; }
 }
+
+@layer utilities {
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}

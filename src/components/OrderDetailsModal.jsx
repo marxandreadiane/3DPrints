@@ -681,7 +681,7 @@ export default function OrderDetailsModal({ orderId, onClose, initialIsEditing =
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/60 backdrop-blur-sm animate-in fade-in duration-200 font-sans">
       <div
-        className="bg-white rounded-xl shadow-2xl border border-zinc-200 w-full max-w-6xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200"
+        className="bg-white sm:rounded-xl shadow-2xl border-x sm:border border-zinc-200 w-full max-w-6xl overflow-hidden flex flex-col h-full sm:h-auto sm:max-h-[90vh] animate-in slide-in-from-bottom sm:zoom-in-95 duration-300"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="px-6 py-4 border-b border-zinc-200 flex justify-between items-center bg-zinc-50 shrink-0">
@@ -731,7 +731,7 @@ export default function OrderDetailsModal({ orderId, onClose, initialIsEditing =
           </div>
         </div>
 
-        <div className="p-6 overflow-y-auto">
+        <div className="p-4 sm:p-6 overflow-y-auto">
           {isLoading ? (
             <div className="space-y-6">
               <div className="h-8 w-1/3 bg-zinc-100 rounded pulse-light" />
@@ -750,7 +750,7 @@ export default function OrderDetailsModal({ orderId, onClose, initialIsEditing =
           ) : isEditing && editorState && totals ? (
             <div className="flex flex-col lg:flex-row gap-6 items-start">
               <div className="flex-1 w-full space-y-6">
-                <div className="flex flex-wrap items-center justify-between gap-4 bg-zinc-50 p-4 rounded-lg border border-zinc-200">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-zinc-50 p-4 rounded-lg border border-zinc-200">
                   <div className="flex items-center gap-3">
                     <Calendar className="w-5 h-5 text-zinc-400" />
                     <div>
@@ -822,9 +822,9 @@ export default function OrderDetailsModal({ orderId, onClose, initialIsEditing =
                     </button>
                   </div>
 
-                  <div className="p-5 space-y-6">
+                  <div className="p-4 sm:p-5 space-y-6">
                     {editorState.plates.map((plate, index) => (
-                      <div key={plate.id} className="border border-zinc-200 rounded-lg overflow-hidden bg-zinc-50/50 shadow-sm">
+                      <div key={plate.id} className="border border-zinc-200 rounded-lg overflow-hidden bg-zinc-50/50 shadow-sm transition-all">
                         <div className="px-4 py-3 border-b border-zinc-200 bg-white flex justify-between items-center">
                           <h3 className="text-sm font-bold tracking-tight text-zinc-800">Plate {index + 1}</h3>
                           {editorState.plates.length > 1 && (
@@ -833,83 +833,93 @@ export default function OrderDetailsModal({ orderId, onClose, initialIsEditing =
                             </button>
                           )}
                         </div>
-
-                        <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-5 border-b border-zinc-200 bg-zinc-50/50">
-                          <div>
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Hours</label>
-                            <div className="relative">
-                              <input type="number" min="0" value={plate.printTimeHours} onChange={(e) => updatePlate(plate.id, 'printTimeHours', e.target.value)} className={`${fieldClass} pr-12 font-medium`} />
-                              <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">hrs</span>
+                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5 border-b border-zinc-200 bg-zinc-50/50">
+                          <div className="flex flex-col gap-2">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Print Timeline</label>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  value={plate.printTimeHours}
+                                  onChange={(e) => updatePlate(plate.id, 'printTimeHours', e.target.value === '' ? '' : Number(e.target.value))}
+                                  className={`${fieldClass} pr-12`}
+                                />
+                                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">hrs</span>
+                              </div>
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  value={plate.printTimeMinutes}
+                                  onChange={(e) => updatePlate(plate.id, 'printTimeMinutes', e.target.value === '' ? '' : Number(e.target.value))}
+                                  className={`${fieldClass} pr-12`}
+                                />
+                                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">mins</span>
+                              </div>
                             </div>
                           </div>
-                          <div>
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Minutes</label>
+                          <div className="flex flex-col gap-2">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Filament Changes</label>
                             <div className="relative">
-                              <input type="number" min="0" max="59" value={plate.printTimeMinutes} onChange={(e) => updatePlate(plate.id, 'printTimeMinutes', e.target.value)} className={`${fieldClass} pr-12 font-medium`} />
-                              <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">min</span>
-                            </div>
-                          </div>
-                          <div>
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Filament Changes</label>
-                            <div className="relative">
-                              <input type="number" min="0" value={plate.filamentChangeCount} onChange={(e) => updatePlate(plate.id, 'filamentChangeCount', e.target.value)} className={`${fieldClass} pr-12 font-medium`} />
-                              <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">qty</span>
+                              <input
+                                type="number"
+                                value={plate.filamentChangeCount}
+                                onChange={(e) => updatePlate(plate.id, 'filamentChangeCount', e.target.value === '' ? '' : Number(e.target.value))}
+                                className={`${fieldClass} pr-12`}
+                              />
+                              <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none uppercase">qty</span>
                             </div>
                           </div>
                         </div>
-
                         <div className="p-4 bg-white">
                           <div className="flex items-center justify-between mb-3">
                             <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">Filaments Used</label>
                             <button onClick={() => addPlateFilament(plate.id)} className="text-[11px] font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 px-2 py-1.5 rounded transition-colors flex items-center gap-1">
-                              <Plus className="w-3 h-3" />
-                              Add Filament
+                              <Plus className="w-3 h-3" /> Add Filament
                             </button>
                           </div>
-
                           <div className="space-y-3">
-                            {plate.filaments.map((filament, filamentIndex) => (
-                              <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1.5fr_1fr_1fr_auto] gap-3 items-end bg-zinc-50/50 p-3 rounded border border-zinc-100">
+                            {plate.filaments.map((filament, fIndex) => (
+                              <div key={filament.id} className="grid grid-cols-1 md:grid-cols-[1.5fr_1fr_1fr_auto] gap-4 md:gap-3 items-end bg-zinc-50/50 p-4 md:p-3 rounded border border-zinc-100">
                                 <div>
-                                  <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Filament {filamentIndex + 1}</label>
-                                  {inventoryFilaments.length > 0 ? (
-                                    <select
-                                      value={filament.inventoryId ?? ''}
-                                      onChange={(e) => updatePlateFilamentInventory(plate.id, filament.id, e.target.value)}
-                                      className={fieldClass}
-                                    >
-                                      <option value="">-- select filament --</option>
-                                      {inventoryFilaments.map((inventoryFilament) => (
-                                        <option key={inventoryFilament.id} value={String(inventoryFilament.id)}>
-                                          {inventoryFilament.type || inventoryFilament.name}
-                                          {inventoryFilament.color ? ` - ${inventoryFilament.color}` : ''}
-                                          {inventoryFilament.brand ? ` (${inventoryFilament.brand})` : ''}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  ) : (
-                                    <div className="px-3 py-2 bg-zinc-50 border border-dashed border-zinc-200 rounded-md text-xs text-zinc-400 italic">
-                                      No inventory - add filaments in the Inventory tab
-                                    </div>
-                                  )}
+                                  <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Filament {fIndex + 1}</label>
+                                  <select value={filament.inventoryId} onChange={(e) => updatePlateFilamentInventory(plate.id, filament.id, e.target.value)} className={fieldClass}>
+                                    <option value="">— select filament —</option>
+                                    {inventoryFilaments.map((inv) => (
+                                      <option key={inv.id} value={String(inv.id)}>{inv.type} – {inv.color} ({inv.brand})</option>
+                                    ))}
+                                  </select>
                                 </div>
                                 <div>
-                                  <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Weight</label>
+                                  <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Weight Used</label>
                                   <div className="relative">
-                                    <input type="number" min="0" step="0.01" value={filament.weight} onChange={(e) => updatePlateFilament(plate.id, filament.id, 'weight', e.target.value)} className={`${fieldClass} pr-10 font-medium`} />
+                                    <input
+                                      type="number"
+                                      value={filament.weight}
+                                      onChange={(e) => updatePlateFilament(plate.id, filament.id, 'weight', e.target.value === '' ? '' : Number(e.target.value))}
+                                      className={`${fieldClass} pr-9`}
+                                    />
                                     <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">g</span>
                                   </div>
                                 </div>
                                 <div>
-                                  <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Cost per Kg</label>
+                                  <label className="block text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Cost Rate</label>
                                   <div className="relative">
-                                    <input type="number" min="0" step="0.01" value={filament.costPerKg} onChange={(e) => updatePlateFilament(plate.id, filament.id, 'costPerKg', e.target.value)} className={`${fieldClass} pr-12 font-medium`} />
-                                    <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
+                                    <input
+                                      type="number"
+                                      value={filament.costPerKg}
+                                      onChange={(e) => updatePlateFilament(plate.id, filament.id, 'costPerKg', e.target.value === '' ? '' : Number(e.target.value))}
+                                      className={`${fieldClass} pr-12`}
+                                    />
+                                    <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP/kg</span>
                                   </div>
                                 </div>
-                                <button onClick={() => removePlateFilament(plate.id, filament.id)} className="p-2.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors">
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
+                                <div className="flex h-[38px] items-center">
+                                  {plate.filaments.length > 1 && (
+                                    <button onClick={() => removePlateFilament(plate.id, filament.id)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors">
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -930,53 +940,47 @@ export default function OrderDetailsModal({ orderId, onClose, initialIsEditing =
                       Add Item
                     </button>
                   </div>
-                  <div className="p-5">
+                  <div className="p-4 sm:p-5">
                     {editorState.materials.length === 0 ? (
-                      <div className="py-4 text-xs text-zinc-400 text-center border border-dashed border-zinc-200 rounded bg-zinc-50">
-                        No supplementary items.
-                      </div>
+                      <div className="py-4 text-xs text-zinc-400 text-center border border-dashed border-zinc-200 rounded bg-zinc-50">No supplementary items.</div>
                     ) : (
                       <div className="space-y-4">
-                        {editorState.materials.map((material) => (
-                          <div key={material.id} className="grid grid-cols-1 md:grid-cols-[1.7fr_0.8fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
+                        {editorState.materials.map((mat) => (
+                          <div key={mat.id} className="grid grid-cols-1 md:grid-cols-[1.7fr_0.8fr_1fr_auto] gap-4 md:gap-3 items-end bg-zinc-50 p-4 md:p-3 rounded border border-zinc-100">
                             <div>
                               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Inventory Item</label>
-                              {inventoryMaterials.length > 0 ? (
-                                <select
-                                  value={material.inventoryId ?? ''}
-                                  onChange={(e) => updateMaterialInventory(material.id, e.target.value)}
-                                  className={fieldClass}
-                                >
-                                  <option value="">-- select material/hardware --</option>
-                                  {inventoryMaterials.map((inventoryMaterial) => (
-                                    <option key={inventoryMaterial.id} value={String(inventoryMaterial.id)}>
-                                      {inventoryMaterial.name}
-                                      {inventoryMaterial.category ? ` - ${inventoryMaterial.category}` : ''}
-                                      {inventoryMaterial.unit ? ` (${inventoryMaterial.unit})` : ''}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <div className="px-3 py-2 bg-zinc-50 border border-dashed border-zinc-200 rounded-md text-xs text-zinc-400 italic">
-                                  No inventory materials - add them in the Inventory tab
-                                </div>
-                              )}
+                              <select value={mat.inventoryId} onChange={(e) => updateMaterialInventory(mat.id, e.target.value)} className={fieldClass}>
+                                <option value="">-- select material/hardware --</option>
+                                {inventoryMaterials.map((inv) => (
+                                  <option key={inv.id} value={String(inv.id)}>{inv.name} ({inv.unit})</option>
+                                ))}
+                              </select>
                             </div>
                             <div>
                               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Qty</label>
                               <div className="relative">
-                                <input type="number" min="0" step="1" value={material.quantity} onChange={(e) => updateMaterial(material.id, 'quantity', e.target.value)} className={`${fieldClass} pr-10 font-medium`} />
-                                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">{material.unit || 'pcs'}</span>
+                                <input
+                                  type="number"
+                                  value={mat.quantity}
+                                  onChange={(e) => updateMaterial(mat.id, 'quantity', e.target.value === '' ? '' : Number(e.target.value))}
+                                  className={`${fieldClass} pr-10`}
+                                />
+                                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">{mat.unit || 'pcs'}</span>
                               </div>
                             </div>
                             <div>
                               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Cost / Unit</label>
                               <div className="relative">
-                                <input type="number" min="0" step="0.01" value={material.costPerUnit} onChange={(e) => updateMaterial(material.id, 'costPerUnit', e.target.value)} className={`${fieldClass} pr-12 font-medium`} />
+                                <input
+                                  type="number"
+                                  value={mat.costPerUnit}
+                                  onChange={(e) => updateMaterial(mat.id, 'costPerUnit', e.target.value === '' ? '' : Number(e.target.value))}
+                                  className={`${fieldClass} pr-12`}
+                                />
                                 <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">PHP</span>
                               </div>
                             </div>
-                            <button onClick={() => removeMaterial(material.id)} className="p-2.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors">
+                            <button onClick={() => removeMaterial(mat.id)} className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0">
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
@@ -994,40 +998,54 @@ export default function OrderDetailsModal({ orderId, onClose, initialIsEditing =
                       Add Labor
                     </button>
                   </div>
-                  <div className="p-5">
-                    <div className="space-y-4">
-                      {editorState.labors.map((labor) => (
-                        <div key={labor.id} className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_auto] gap-3 items-end bg-zinc-50 p-3 rounded border border-zinc-100">
-                          <div>
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Operation Phase</label>
-                            <select value={labor.type} onChange={(e) => updateLabor(labor.id, 'type', e.target.value)} className={fieldClass}>
-                              <option value="3D Modeling & Printing">3D Modeling & Printing</option>
-                              <option value="Painting">Painting</option>
-                              <option value="Sanding">Sanding</option>
-                              <option value="Assembly">Assembly</option>
-                              <option value="Other">Other</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Duration</label>
-                            <div className="relative">
-                              <input type="number" min="0" step="0.5" value={labor.hours} onChange={(e) => updateLabor(labor.id, 'hours', e.target.value)} className={`${fieldClass} pr-10 font-medium`} />
-                              <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">hrs</span>
+                  <div className="p-4 sm:p-5">
+                    {editorState.labors.length === 0 ? (
+                      <div className="py-4 text-xs text-zinc-400 text-center border border-dashed border-zinc-200 rounded bg-zinc-50">No labor items tracked.</div>
+                    ) : (
+                      <div className="space-y-4">
+                        {editorState.labors.map((lab) => (
+                          <div key={lab.id} className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_auto] gap-4 md:gap-3 items-end bg-zinc-50 p-4 md:p-3 rounded border border-zinc-100">
+                            <div>
+                              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Operation Phase</label>
+                              <select value={lab.type} onChange={(e) => updateLabor(lab.id, 'type', e.target.value)} className={fieldClass}>
+                                <option value="3D Modeling & Printing">3D Modeling & Printing</option>
+                                <option value="Painting">Painting</option>
+                                <option value="Sanding">Sanding</option>
+                                <option value="Assembly">Assembly</option>
+                                <option value="Other">Other</option>
+                              </select>
                             </div>
-                          </div>
-                          <div>
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Rate</label>
-                            <div className="relative">
-                              <input type="number" min="0" step="0.01" value={labor.rate} onChange={(e) => updateLabor(labor.id, 'rate', e.target.value)} className={`${fieldClass} pr-10 font-medium`} />
-                              <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">/hr</span>
+                            <div>
+                              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Duration</label>
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  value={lab.hours}
+                                  onChange={(e) => updateLabor(lab.id, 'hours', e.target.value === '' ? '' : Number(e.target.value))}
+                                  className={`${fieldClass} pr-10`}
+                                />
+                                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">hrs</span>
+                              </div>
                             </div>
+                            <div>
+                              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2">Rate</label>
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  value={lab.rate}
+                                  onChange={(e) => updateLabor(lab.id, 'rate', e.target.value === '' ? '' : Number(e.target.value))}
+                                  className={`${fieldClass} pr-10`}
+                                />
+                                <span className="absolute inset-y-0 right-3 flex items-center text-zinc-400 text-xs pointer-events-none">/hr</span>
+                              </div>
+                            </div>
+                            <button onClick={() => removeLabor(lab.id)} className="p-2.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-200 rounded transition-colors">
+                              <Trash2 className="w-5 h-5" />
+                            </button>
                           </div>
-                          <button onClick={() => removeLabor(labor.id)} className="p-2.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </section>
 

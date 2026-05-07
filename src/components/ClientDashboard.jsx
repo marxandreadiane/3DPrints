@@ -157,8 +157,8 @@ export default function ClientDashboard() {
   return (
     <div className="flex bg-zinc-100 min-h-screen font-sans selection:bg-zinc-200">
       
-      {/* Sidebar: Ultra-thin Minimalist Left Navigation */}
-      <aside className="w-[68px] sm:w-[260px] bg-white border-r border-zinc-200 flex flex-col transition-all h-screen shrink-0 relative z-20">
+      {/* Sidebar: hidden on mobile, visible on sm+ */}
+      <aside className="hidden sm:flex w-[68px] sm:w-[260px] bg-white border-r border-zinc-200 flex-col transition-all h-screen shrink-0 relative z-20">
         <div className="h-14 border-b border-zinc-200 flex items-center px-4 shrink-0 overflow-hidden">
           <Factory className="w-6 h-6 text-zinc-900 shrink-0" />
           <span className="ml-3 font-bold tracking-tight text-zinc-900 whitespace-nowrap hidden sm:block font-mono text-sm uppercase">NexusPrint</span>
@@ -220,11 +220,20 @@ export default function ClientDashboard() {
         </div>
       </aside>
 
+      {/* Bottom Navigation for Mobile */}
+      <nav className="sm:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-zinc-200 h-16 flex items-center justify-around px-2 z-50 shadow-lg">
+        <MobileTabButton active={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')} icon={Box} label="Dash" />
+        <MobileTabButton active={activeTab === 'Calculator'} onClick={() => setActiveTab('Calculator')} icon={Calculator} label="Price" />
+        <MobileTabButton active={activeTab === 'Inventory'} onClick={() => setActiveTab('Inventory')} icon={Package} label="Stock" />
+        <MobileTabButton active={activeTab === 'Financials'} onClick={() => setActiveTab('Financials')} icon={BarChart3} label="Money" />
+        <MobileTabButton active={activeTab === 'Configurations'} onClick={() => setActiveTab('Configurations')} icon={Settings} label="Set" />
+      </nav>
+
       {/* Main Content Pane */}
-      <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
+      <main className="flex-1 flex flex-col h-screen overflow-hidden relative pb-16 sm:pb-0">
         
         {/* Header - Workspace / Directory Navigation */}
-        <header className="h-14 bg-white border-b border-zinc-200 flex items-center px-6 justify-between shrink-0">
+        <header className="h-14 bg-white border-b border-zinc-200 flex items-center px-4 sm:px-6 justify-between shrink-0">
           
           <div className="flex items-center text-xs font-medium text-zinc-500 uppercase tracking-widest gap-2">
             <div className="relative group/client">
@@ -320,5 +329,19 @@ function Calculator(props) {
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
       <rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16.01" y1="10" y2="10"/><line x1="12" x2="12.01" y1="10" y2="10"/><line x1="8" x2="8.01" y1="10" y2="10"/><line x1="16" x2="16.01" y1="14" y2="14"/><line x1="12" x2="12.01" y1="14" y2="14"/><line x1="8" x2="8.01" y1="14" y2="14"/><line x1="16" x2="16.01" y1="18" y2="18"/><line x1="12" x2="12.01" y1="18" y2="18"/><line x1="8" x2="8.01" y1="18" y2="18"/>
     </svg>
+  );
+}
+
+function MobileTabButton({ active, onClick, icon: Icon, label }) {
+  return (
+    <button 
+      onClick={onClick}
+      className={`flex flex-col items-center justify-center gap-1 transition-all ${active ? 'text-zinc-900' : 'text-zinc-400'}`}
+    >
+      <div className={`p-1.5 rounded-xl transition-all ${active ? 'bg-zinc-100' : ''}`}>
+        <Icon className={`w-5 h-5 ${active ? 'scale-110' : ''}`} />
+      </div>
+      <span className="text-[10px] font-bold uppercase tracking-tighter">{label}</span>
+    </button>
   );
 }
